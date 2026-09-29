@@ -109,7 +109,7 @@ static void serviceBanner() {
 // ============================================================
 static V3 shipPos{0, 0, 0}, prevShipPos{0, 0, 0};
 static Basis shipB;
-static float shipSpeed = 0, rateYaw = 0, ratePitch = 0;
+static float shipSpeed = 0, rateYaw = 0, ratePitch = 0, rateRoll = 0;
 static float throttleT = 0.5f;           // slider: 0 stop, 0.5 cruise, 1 boost
 static int layer = 0;                    // 0 real .. 4 deep cove
 static float fovPulse = 1.f;
@@ -1494,7 +1494,7 @@ static void onDestroyedFlow() {
 // ============================================================
 static float neutralAx = 0, neutralAy = 0;
 static bool neutralValid = false;
-static float tiltX = 0, tiltY = 0;
+static float tiltX = 0, tiltY = 0, tiltRoll = 0;
 static bool touchDown = false, dragging = false, sliding = false;
 static int touchX0 = 0, touchY0 = 0, touchLX = 0, touchLY = 0;
 static uint32_t touchT0 = 0;
@@ -1582,9 +1582,9 @@ static void updateInput() {
     else {
       if (!dragging && (abs(td.x - touchX0) + abs(td.y - touchY0)) > 7 && flying) dragging = true;
       if (dragging && flying && launchAnim <= 0) {
-        // slide = yaw and roll: quick and precise; it never drags the sky around
+        // slide = look around: direct yaw + pitch (not roll)
         shipB.yaw(dx * 0.0095f);
-        shipB.roll(-dy * 0.011f);
+        shipB.pitch(-dy * 0.011f);
         shipB.fix();
         if (dockTarget >= 0 && (abs(dx) + abs(dy)) > 3) { dockTarget = -1; setBanner("DOCKING COMPUTER OFF", 900); }
       }
@@ -1604,7 +1604,7 @@ static void updateInput() {
     return;
   }
   if (M5.BtnA.wasPressed()) cycleTarget();
-  if (M5.BtnB.wasPressed()) { captureNeutral(); tiltX = tiltY = 0; setBanner("ATTITUDE CENTERED", 900); hx::pop(0.2f, 0.02f); }
+  if (M5.BtnB.wasPressed()) { captureNeutral(); tiltX = tiltY = tiltRoll = 0; rateYaw = ratePitch = rateRoll = 0; setBanner("ATTITUDE CENTERED", 900); hx::pop(0.2f, 0.02f); }
   if (M5.BtnC.wasPressed()) { throttleT = 0.5f; setBanner("CRUISE", 700); hx::pop(0.2f, 0.02f); }
 
   if (!neutralValid) captureNeutral();
@@ -1618,8 +1618,20 @@ static void updateInput() {
       a = clampf((a - 0.05f) / 0.45f, 0, 1.4f);
       return (v < 0 ? -1.f : 1.f) * (a * 0.45f + a * a * 0.55f);
     };
-    tiltX = tiltX * 0.8f + shape(-ay) * 0.2f;
-    tiltY = tiltY * 0.8f + shape(ax) * 0.2f;
+    // Device tip: X → pitch stick, Y → yaw stick (flip signs on device if mirrored)
+    tiltY = tiltY * 0.8f + shape(ax) * 0.2f;   // pitch
+    tiltX = tiltX * 0.8f + shape(ay) * 0.2f;   // yaw
+    // Steering-wheel roll: gyro about Z, intentional deadzone + ease-in
+    float gz = d.gyro.z;   // if no roll on device, try d.gyro.x or d.gyro.y
+    float ga = fabsf(gz);
+    float twist = 0.f;
+    const float dead = 0.15f;
+    if (ga > dead) {
+      float u = clampf((ga - dead) / 0.8f, 0.f, 1.f);
+      u = u * u;
+      twist = (gz < 0.f ? -1.f : 1.f) * u;
+    }
+    tiltRoll = tiltRoll * 0.85f + twist * 0.15f;
   }
 }
 
@@ -1802,7 +1814,10 @@ static void updateWorld() {
     float k = 1.f - expf(-dt / 0.12f);
     rateYaw += (-tiltX * 1.15f - rateYaw) * k;
     ratePitch += (-tiltY * 1.0f - ratePitch) * k;
-    shipB.yaw(rateYaw * dt); shipB.pitch(ratePitch * dt);
+    rateRoll += (tiltRoll * 1.2f - rateRoll) * k;
+    shipB.yaw(rateYaw * dt);
+    shipB.pitch(ratePitch * dt);
+    shipB.roll(rateRoll * dt);
     // light assistance only when nearly threaded: a nudge toward the ring's heart
     for (auto &g : objs) {
       if (g.kind != K_GATE && g.kind != K_PORTAL && g.kind != K_DOCKGATE) continue;
