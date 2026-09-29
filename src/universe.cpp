@@ -105,73 +105,79 @@ int landmarksForBand(uint8_t band, const Landmark **out, int maxOut) {
   return n;
 }
 
+// How deep a dive a place needs. Stable per name within one universe, so a
+// rumor, a job and a gate all agree. Most places are a shallow hop; a few
+// are genuinely deep.
+uint8_t placeDepth(const char *name) {
+  uint32_t h = 2166136261u ^ s_seed;
+  for (const char *c = name; c && *c; c++) { h ^= (uint8_t)*c; h *= 16777619u; }
+  uint32_t r = mix(h) % 100;
+  if (r < 60) return 1;
+  if (r < 87) return 2;
+  if (r < 97) return 3;
+  return 4;
+}
+
 int buildGateHand(uint8_t localBand, GateOffer *out, int maxOut) {
+  (void)localBand;   // destinations are offered in real space
   if (!out || maxOut <= 0) return 0;
   int n = 0;
   Pilot &p = sheet();
 
   auto push = [&](const char *name, uint8_t depth, uint8_t unknown, uint8_t persistent) {
-    if (n >= maxOut || !name) return;
-    // dedupe
+    if (n >= maxOut || !name || !name[0]) return;
     for (int i = 0; i < n; i++)
       if (strncmp(out[i].name, name, NAME_LEN) == 0) return;
     strncpy(out[n].name, name, NAME_LEN - 1);
     out[n].name[NAME_LEN - 1] = 0;
-    out[n].depthRating = depth;
+    out[n].depthRating = depth < 1 ? 1 : (depth > 4 ? 4 : depth);
     out[n].unknown = unknown;
     out[n].persistent = persistent;
     n++;
   };
 
-  // The hand is a mix, not a list. Earlier code pushed every known gate first,
-  // so once a pilot knew eight names the hand never showed an unknown gate or
-  // a deep landmark again. Each source now gets a small quota.
+  // A mix with quotas: once a pilot knew eight names the old hand never showed
+  // anything new again. Places you heard of lately come first.
 
-  // 1) persistent landmarks — from shallow down; at most two per hand
-  if (localBand >= DEPTH_SHALLOW && s_lmN > 0) {
-    int taken = 0;
-    int start = (int)(urand() % (uint32_t)s_lmN);
-    for (int k = 0; k < s_lmN && taken < 2 && n < maxOut; k++) {
-      const Landmark &L = s_lm[(start + k) % s_lmN];
-      if (L.band < localBand) continue;
-      // Before first discovery the landmark is still unknown to the pilot.
-      // Once threaded, its identity becomes a cross-universe place.
-      bool seen = landmarkDiscovered(L.id);
-      // Unfound places only show up within one layer of where they live, so
-      // the deepest names have to be earned by actually going down.
-      if (!seen && L.band > localBand + 1) continue;
-      if (urandf() >= (seen ? 0.5f : 0.4f)) continue;
-      push(L.name, L.band, seen ? 0 : 1, 1);
-      taken++;
-    }
-  }
-
-  // 2) unknown wander gates
-  int unknowns = 1 + (int)(urand() % 2);
-  if (p.rank[CR_WANDERER] > 2) unknowns++;
-  for (int k = 0; k < unknowns && n < maxOut; k++) {
-    const char *nm = procName(urand());
-    uint8_t d = localBand;
-    if (urandf() < 0.35f) d = (uint8_t)urand(localBand, DEPTH_BAND_COUNT - 1);
-    push(nm, d, 1, 0);
-  }
-
-  // 3) rumors, freshest first
-  for (int i = (int)p.rumorN - 1, taken = 0; i >= 0 && taken < 2 && n < maxOut; i--, taken++)
+  // 1) rumors, freshest first
+  for (int i = (int)p.rumorN - 1, taken = 0; i >= 0 && taken < 2; i--, taken++)
     push(p.rumors[i].name, p.rumors[i].depthHint, 0, 0);
 
-  // 4) a couple of gates the pilot already knows
+  // 2) somewhere you have never heard of
+  int unknowns = 1 + (int)(urand() % 2);
+  if (p.rank[CR_WANDERER] > 2) unknowns++;
+  for (int k = 0; k < unknowns; k++) {
+    const char *nm = procName(urand());
+    char tmp[NAME_LEN]; strncpy(tmp, nm, NAME_LEN - 1); tmp[NAME_LEN - 1] = 0;
+    push(tmp, placeDepth(tmp), 1, 0);
+  }
+
+  // 3) a couple of places you have been
   if (p.knownN) {
     int start = (int)(urand() % p.knownN);
-    for (int k = 0; k < p.knownN && k < 2 && n < maxOut; k++) {
+    for (int k = 0; k < p.knownN && k < 2; k++) {
       const NameTag &t = p.known[(start + k) % p.knownN];
       push(t.name, t.depthHint, 0, 0);
     }
   }
 
+  // 4) a charted deep landmark: a fixed point that survives lost universes
+  if (s_lmN > 0 && urandf() < 0.6f) {
+    int start = (int)(urand() % (uint32_t)s_lmN);
+    for (int k = 0; k < s_lmN; k++) {
+      const Landmark &L = s_lm[(start + k) % s_lmN];
+      if (!landmarkDiscovered(L.id)) continue;
+      push(L.name, L.band, 0, 1);
+      break;
+    }
+  }
+
   // 5) never a thin hand
-  for (int guard = 0; n < 3 && n < maxOut && guard < 8; guard++)
-    push(procName(urand()), localBand, 1, 0);
+  for (int guard = 0; n < 3 && n < maxOut && guard < 8; guard++) {
+    const char *nm = procName(urand());
+    char tmp[NAME_LEN]; strncpy(tmp, nm, NAME_LEN - 1); tmp[NAME_LEN - 1] = 0;
+    push(tmp, placeDepth(tmp), 1, 0);
+  }
   return n;
 }
 
@@ -188,8 +194,8 @@ void encounterWeights(uint8_t band, uint8_t out[ENC_COUNT]) {
     if (p.cap[CAP_CLOAK] > 0 && out[ENC_PIRATE] > p.cap[CAP_CLOAK] * 2)
       out[ENC_PIRATE] = (uint8_t)(out[ENC_PIRATE] - p.cap[CAP_CLOAK] * 2);
     out[ENC_LANDMARK_ROCK] = 10 + p.cap[CAP_MINING] * 2;
-    out[ENC_LANDMARK_GIANT] = 6;
-    out[ENC_STATION] = 14;
+    out[ENC_LANDMARK_GIANT] = 0;   // giants are bodies in the scene, not passers-by
+    out[ENC_STATION] = 5;          // an outpost drifting into view
     out[ENC_ESCAPE_POD] = 5;
     out[ENC_WRECK] = 7;
   } else if (band == DEPTH_SHALLOW) {
@@ -200,7 +206,6 @@ void encounterWeights(uint8_t band, uint8_t out[ENC_COUNT]) {
     out[ENC_ESCAPE_POD] = 6;
     out[ENC_WRECK] = 8;
     out[ENC_ARTIFACT] = 3;
-    out[ENC_LANDMARK_GIANT] = 3;   // a second horizon: still scoopable
   } else {
     out[ENC_ANOMALY] = 18 + band * 2;
     out[ENC_HOSTILE] = 14 + band * 3;
@@ -209,8 +214,6 @@ void encounterWeights(uint8_t band, uint8_t out[ENC_COUNT]) {
     out[ENC_WRECK] = 8;
     out[ENC_ARTIFACT] = 6 + band * 2;
     out[ENC_ESCAPE_POD] = 3;
-    out[ENC_STATION] = 3;          // rare deep docks keep the deep from being a fuel trap
-    out[ENC_LANDMARK_GIANT] = 2;
     // scanners make anomalies more "readable" later in resolve; weight stays
     if (p.cap[CAP_SCANNERS] > 2) out[ENC_ANOMALY] = (uint8_t)(out[ENC_ANOMALY] + 4);
   }
@@ -219,10 +222,9 @@ void encounterWeights(uint8_t band, uint8_t out[ENC_COUNT]) {
   out[ENC_MERCHANT] = (uint8_t)(out[ENC_MERCHANT] + p.rank[CR_TRADER] * 2);
   out[ENC_PIRATE] = (uint8_t)(out[ENC_PIRATE] + p.rank[CR_GUNHAND]);
   out[ENC_LANDMARK_ROCK] = (uint8_t)(out[ENC_LANDMARK_ROCK] + p.rank[CR_PROSPECTOR] * 2);
-  out[ENC_LANDMARK_GIANT] = (uint8_t)(out[ENC_LANDMARK_GIANT] + p.rank[CR_PROSPECTOR]);
-  out[ENC_TRAVELER] = (uint8_t)(out[ENC_TRAVELER] + p.rank[CR_WANDERER] + p.rank[CR_RESCUER]);
-  if (out[ENC_ESCAPE_POD]) out[ENC_ESCAPE_POD] = (uint8_t)(out[ENC_ESCAPE_POD] + p.rank[CR_RESCUER]);
   if (out[ENC_WRECK]) out[ENC_WRECK] = (uint8_t)(out[ENC_WRECK] + p.rank[CR_PROSPECTOR]);
+  if (out[ENC_ESCAPE_POD]) out[ENC_ESCAPE_POD] = (uint8_t)(out[ENC_ESCAPE_POD] + p.rank[CR_RESCUER]);
+  out[ENC_TRAVELER] = (uint8_t)(out[ENC_TRAVELER] + p.rank[CR_WANDERER] + p.rank[CR_RESCUER]);
   if (band >= DEPTH_DEEP)
     out[ENC_HOSTILE] = (uint8_t)(out[ENC_HOSTILE] + p.rank[CR_DEPTHRUNNER]);
   if (p.rank[CR_GHOST] > 2 && out[ENC_SECURITY] > p.rank[CR_GHOST])

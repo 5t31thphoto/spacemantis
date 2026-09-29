@@ -31,7 +31,7 @@ ResolveOut resolve(const ResolveIn &in) {
   uint8_t teeth = p.cap[CAP_WEAPONS] < 1 ? 1 : p.cap[CAP_WEAPONS];
   uint8_t shield = p.cap[CAP_SHIELDS] < 1 ? 1 : p.cap[CAP_SHIELDS];
   float threat = (float)in.threat;
-  float power = (float)teeth + rankOf(CR_GUNHAND) * 0.35f;  // scaled in the attack branch
+  float power = (float)teeth + rankOf(CR_GUNHAND) * 0.35f;
   float guard = (float)shield + rankOf(CR_GHOST) * 0.2f;
 
   static const char *taxed[] = {"they tax you and leave", "toll paid in silence", "credits change hands"};
@@ -135,11 +135,10 @@ ResolveOut resolve(const ResolveIn &in) {
       o.xpAmount = 6;
       o.creditDelta = (int16_t)((int)urand(0, 15) - 5);
       // rumor seed
-      GateOffer hand[1];
-      if (buildGateHand(in.band, hand, 1) > 0) {
-        strncpy(o.rumorName, hand[0].name, NAME_LEN - 1);
-        o.rumorDepth = hand[0].depthRating;
-      }
+      // They talk about somewhere: a new name becomes a gate you can fly to.
+      strncpy(o.rumorName, placeName(urand(), in.band, false), NAME_LEN - 1);
+      o.rumorName[NAME_LEN - 1] = 0;
+      o.rumorDepth = placeDepth(o.rumorName);
       if (urandf() < 0.25f) {
         strncpy(o.flagKey, "spoke_kind", FLAG_LEN);
         o.flagValue = 1;
@@ -198,14 +197,11 @@ ResolveOut resolve(const ResolveIn &in) {
     contractOnResolve(in.who, false, false);
   } else {
     o.xpTrack = CR_GUNHAND;
-    // Tuned so a fresh pilot can beat soft targets sometimes and a pirate
-    // only after a weapons upgrade; deep hostiles stay a bad idea early.
+    // A fresh pilot can win against soft targets sometimes; pirates want an
+    // upgrade; deep hostiles stay a bad idea for a long while.
     float edge = power * 1.5f - threat * 0.6f + (urandf() - 0.5f) * 3.0f;
     if (p.cap[CAP_CLOAK] && in.band == DEPTH_REAL) edge += 0.35f;
-    if (in.who == ENC_STATION) {
-      addHeat(HEAT_SECURITY, 20);
-      addHeat(HEAT_HOUSE, 10);
-    }
+    if (in.who == ENC_STATION) { addHeat(HEAT_SECURITY, 20); addHeat(HEAT_HOUSE, 10); }
     if (edge > 1.0f) {
       o.destroyedOther = true;
       o.creditDelta = (int16_t)(10 * in.threat + teeth * 3);

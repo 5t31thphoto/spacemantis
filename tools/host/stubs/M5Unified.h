@@ -17,6 +17,7 @@ class M5Canvas {
   M5Canvas(HostDisplay *) {}
   void setColorDepth(int) {}
   void createSprite(int, int) {}
+  void setPsram(bool) {}
   void fillSprite(uint16_t c) { hostLog("clear %u\n", c); }
   void pushSprite(int, int) { hostLog("push\n"); }
   void fillRect(int x, int y, int w, int h, uint16_t c) { hostLog("fr %d %d %d %d %u\n", x, y, w, h, c); }
@@ -40,7 +41,7 @@ class M5Canvas {
 };
 struct HostTouch { TouchDetail d; TouchDetail getDetail() { return d; } };
 struct HostImu { ImuData data{{0, 0, 1}}; bool update() { return true; } ImuData getImuData() { return data; } };
-struct HostPower { void setVibration(int) {} };
+struct HostPower { int last = 0; long changes = 0; void setVibration(int v) { if (v != last) changes++; last = v; } };
 struct HostCfg { bool output_power, internal_imu; };
 struct M5Class {
   HostDisplay Display; HostTouch Touch; HostBtn BtnA, BtnB, BtnC; HostImu Imu; HostPower Power;

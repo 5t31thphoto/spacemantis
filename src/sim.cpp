@@ -247,8 +247,14 @@ void applyOpportunity(const Opportunity &op) {
 void discoverLandmark(uint32_t id) {
   char key[FLAG_LEN];
   snprintf(key, sizeof(key), "lm%lu", (unsigned long)(id % 1000000UL));
-  flagSet(key, 1, true);
+  if (!flagHas(key)) flagSet(key, (int8_t)(1 + sheet().lives % 120), true);
   contractOnLandmark();
+}
+
+int landmarkChartedLife(uint32_t id) {
+  char key[FLAG_LEN];
+  snprintf(key, sizeof(key), "lm%lu", (unsigned long)(id % 1000000UL));
+  return flagGet(key);
 }
 
 bool landmarkDiscovered(uint32_t id) {

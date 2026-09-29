@@ -12,7 +12,8 @@ SpaceMantis is an Elite-like game with the spreadsheet hidden underneath the fli
 - **No ship-management minigame.** Earned capability is automatically equipped.
 - **No quest log.** A station or encounter offers a small local hand of work; accepting it creates one active lead.
 - **No galaxy map.** The player knows only what has recently been heard, what gates are visible, and what deep landmarks have become meaningful.
-- **Dive, don't jump.** Three consecutive gate threads commit a subspace traversal. Resurfacing is a dangerous shortcut.
+- **Dive, don't jump.** Flying into a named gate is the choice of destination. It spawns the next gate, and the third is a portal. Each portal moves exactly one layer. Resurfacing is a dangerous shortcut.
+- **Real space pays experience; the deep pays money.** Nobody keeps coordinates in real space. Subspace connects every point of it, and the deeper you go the more compressed and connected space becomes. A way through the deep is the most valuable thing a pilot can carry.
 - **Lost in space is literal.** Destruction reseeds the universe and wipes surface/shallow place knowledge while the pilot, career and fitted capabilities survive. **In fiction the pilot only knows they are lost** — theories about the deep, bad jumps, charts that lie. They never learn that their previous cosmos is gone.
 - **The deep becomes smaller.** Deep layers contain a rising fraction of unique and persistent places. Some are authored signatures; others are procedural places that acquire persistence when discovered.
 
@@ -20,30 +21,56 @@ SpaceMantis is an Elite-like game with the spreadsheet hidden underneath the fli
 
 ### Controls
 
-- **Tilt:** steer relative to a captured neutral flight pose.
-- **Touch drag:** yaw / roll attitude. It never drags the sky.
-- **C:** re-center attitude (captures the current hand pose as neutral).
-- **Reticle / alignment:** light assistance exists only when nearly threading a gate.
-- **Gate threading:** a gate only counts when the ship is actually aligned with it. Missing a gate does not silently select it.
-- **Contacts:** approach while you keep flying. Tap the left verb (HAIL / MINE / SCOOP / SALVAGE / READ / RESCUE / DOCK) or ATTACK, or press A / B. Ignoring a contact is a valid choice, but pirates, sub-pirates, hostiles and angry security may open fire when they get close. Cloak and Ghost rank help you slip them.
+- **Tilt:** aim the nose, relative to a captured neutral flight pose.
+- **Slide:** yaw (left/right) and roll (up/down), quick and precise. It never drags the sky.
+- **Throttle:** the slider on the right edge. Drag it; there is a soft detent at cruise. Low is all stop, high is boost.
+- **Tap:** target anything in space. Its verbs appear beside it.
+- **A:** next target. **B:** re-center the tilt pose. **C:** snap the throttle to cruise.
+- **Reticle / alignment:** light assistance exists only when nearly threading a gate or portal: a nudge, not an autopilot.
+- **Gate threading:** a gate only counts when the ship actually passes through the ring. Missing one does not select it: the ring stays where it is, so come round and fly it again.
+
+### A trip
+
+1. In real space a few named gates fan out around you. Each shows a place and its **depth**: how deep a dive the way there takes. Names come from rumors, the job you took, places you have been, charted deep landmarks, and places nobody has heard of. A depth marked `!` is past what your hull is rated for.
+2. Fly into one. That is the whole decision. The next gate appears ahead, then a **portal** whose inside already shows the next layer.
+3. Every portal is one layer down, until the destination's depth. Then the chain turns and every portal is one layer up.
+4. You resurface **at the place**, far across the universe. A way through depth 2 or more pays real money on arrival; depth 1 is everyday infrastructure.
+
+Pushing past your depth rating risks a glitch at the portal. A portal that cannot take a dry tank turns the chain back up, and you surface somewhere else. A dry climb costs hull, so nobody is stranded below.
 
 ### Travel layers
 
-| Layer | Feel | Encounters |
+| Layer | Feel | Who is there |
 |---|---|---|
-| Real space | restrained procedural stars and dusty nebulae | travelers, merchants, security, pirates, stations, asteroids, gas giants, escape pods, wrecks, artifacts |
-| Shallow | mild distortion | lost travelers, sub-pirates, anomalies |
-| Deep | stronger alien geometry | hostile entities, anomalies, rare landmarks |
-| Deeper | increasingly unique | persistent/deep routes, signature places |
-| Deepest | dense, strange, small | highest landmark density and authored share |
+| Real space | restrained stars, dusty nebulae, a local sun, lit worlds and giants | travelers, merchants, security, pirates, stations, asteroids, pods, wrecks |
+| The Shallows | dark teal distortion, stars begin to smear | lost travelers, sub-pirates in the liminal wake, anomalies |
+| Smuggler Roads | marbled violet, streamers flowing past | sub-pirates, deep traders, wrecks, first landmarks |
+| Below the Roads | the sky folds into a kaleidoscope; collapsed stars bend light | hostiles, anomalies, landmarks, afterimages |
+| Deep Cove | a tunnel folded into itself, a heartbeat that inverts the sky | the ghost fleet; the whole layer is persistent |
 
-Each layer is one band, 1 (real) through 5 (deepest). A gate's `dN` label is the layer it opens toward. Three threaded gates create the actual dive/resurface transition, and the third gate decides where: a deeper gate takes you to its layer, a same-layer gate pushes one layer down, a shallower gate climbs to it, and **RESURFACE** (always present below real space) climbs straight to real space — a shortcut that costs extra glitch risk from far down and leaves a wake sub-pirates notice. Diving past your depth rating risks hull damage. A climb with an empty tank is paid for in hull, so nobody is stranded below. The player never chooses a coordinate from a menu.
+The deep is smaller: gates come closer together the further down you are. The Deep Cove keeps the same local gate names, light and places in every universe. Real-space people barely believe in sub-pirates, never mind the cove.
 
-## The three verbs
+## Context verbs
+
+Tap a thing and it offers what it can do, given what it is, what your ship can do, and what is going on. There is no menu. Green is talk, red is violence, blue is dock:
+
+| Target | Verbs |
+|---|---|
+| Ship | HAIL / ATTACK (the deep hostile answers to SIGNAL) |
+| Station | DOCK — the docking computer flies you round to the slot |
+| Asteroid | MINE (SPENT, HOLD FULL when it can't) |
+| Gas giant | SCOOP near the cloud tops (TANK FULL, SETTLING) |
+| Escape pod | RESCUE |
+| Wreck | SALVAGE / ATTACK |
+| Artifact | READ / ATTACK |
+| Anomaly | SCAN / ATTACK |
+| Deep landmark | CHART |
+
+A verb out of range shows its distance instead. Aggressive contacts don't wait: pirates bend toward you and open fire when close. A good cloak and Ghost rank help you slip them, and boosting away works too.
 
 ### HAIL — green
 
-Parley, trade, bluff, request help, rescue, receive rumors, read anomalies, or interact with a landmark.
+Parley, trade, bluff, request help, rescue, receive rumors, read anomalies.
 
 ### ATTACK — red
 
@@ -51,18 +78,18 @@ Combat is a short resolve, not a dogfight simulator. Weapons, shields, career ra
 
 ### DOCK — blue
 
-A station is an automatic approach: thread a DOCK gate or tap DOCK on a station contact (rare deep docks exist too). The board is intentionally thin and stays open until you undock:
+Aim for the blue gate in front of the slot, or tap DOCK. The board is thin: refuel/repair and sell/buy are business, and you stay docked. Taking work, buying a rumor or taking the board's opportunity **sets your course**: you are taxied out with that destination's gate waiting right in front of you.
 
-| Row | What it does |
-|---|---|
-| Refuel / repair | full top-up, or a partial refill when credit is thin; a broke pilot with a dry tank gets fronted enough to reach a gas giant |
-| Work | accept the board's job as your one active lead, or drop the current lead |
-| Buy rumor | adds an unknown gate name to the local hand |
-| Sell haul / buy gear | sells hold lines your lead doesn't own; with nothing to sell, offers one specific capability upgrade with its price |
-| Board | the station's opportunity card, taken as your lead (once per dock) |
-| Undock | back to the gates |
+## The money
 
-Tap a row to select it and tap it again to commit, or use **B** commit, **C** next, **A** undock.
+- Real-space exploring (unheard-of places, hails, rescues) mostly pays **experience**.
+- A way through **depth 2+** pays on arrival: roughly 90 / 280 / 700 credits for depth 2 / 3 / 4, half again for a place nobody had heard of.
+- **Charting** a deep landmark for the first time pays 70 × depth²: up to about 1,100 credits for the deepest.
+- The **ghost fleet** in the Deep Cove trades in fixed points, not goods. They ignore pilots who still count stars.
+
+## Haptics
+
+The Core2's vibration motor is the soundtrack. Layers hum and throb: a tidal pulse near heavy bodies, a tearing hum that builds as a portal approaches, the pressure of subspace, a heartbeat below the roads. One-shots pop and thud: weapon fire, hits, the thread of a gate, the purr of docking. On a portal crossing the hum peaks, then cuts to total silence.
 
 ## Hidden spreadsheet
 
@@ -116,7 +143,7 @@ A destruction is a universe wipe, not career permadeath.
 - current haul
 - local heat
 
-A deep landmark is not truly persistent merely because it exists in the procedural table. The pilot has to **discover it**; discovery writes a persistent landmark flag. That is how the game can eventually reveal that some places are genuinely surviving from one lost universe to another.
+A deep landmark is not truly persistent merely because it exists in the procedural table. The pilot has to **chart it**; charting writes a persistent flag with the life it was charted in. Charted landmarks appear as destination gates in any later universe. The first time a pilot charts a place they already charted **in a previous life**, the game shows its one ending card, THE DEEP IS SMALL, and then they keep flying.
 
 ## Content model
 
@@ -133,19 +160,11 @@ The game is deliberately capable of producing lines such as:
 
 These are consequences and clues, not a quest log.
 
-## The long arc
-
-Every persistent landmark you thread is written into the pilot sheet and survives universe wipes. Undiscovered landmarks only show up within one layer of where they live, so the deepest names have to be earned by going down. Milestones mark the way, and threading the last fixed point shows the one ending card — after which you keep flying.
-
-## Leads
-
-Only one job is ever active. The HUD shows its name, progress and what finishes it. Cargo leads point at a named gate (marked `JOB` in flight); bounty, rescue, survey, tour, escort, ghost, depth-run and landmark-watch leads finish through what you do rather than where you go. The active lead survives reboot; it does not survive losing the ship.
-
 ## Current content families
 
-The current encounter deck includes travelers, merchants, security, surface pirates, sub-pirates, hostile deep contacts, anomalies, asteroids, gas giants, stations/outposts, escape pods, wrecks and deep artifacts. Wrecks and artifacts use the same one-commit interaction language as mining: aim, Hail/Salvage, resolve, continue flying.
+The current encounter deck includes travelers, merchants, security, surface pirates, sub-pirates, hostile deep contacts, anomalies, asteroids, gas giants, stations/outposts, escape pods, wrecks, deep artifacts and the ghost fleet. Everything uses the same interaction language: tap it, choose the verb it offers, resolve, keep flying.
 
-The station board now includes haul, bounty, rescue, survey, smuggle, tourism, outpost supply, escort and market work. Work only becomes active when the player commits to it; merely looking at an offer has no cargo side effect.
+The station board includes haul, bounty, rescue, survey, smuggle, tourism, outpost supply, escort and market work, plus ghost runs, depth runs and landmark watches from the opportunity board. Work only becomes active when the player commits to it; merely looking at an offer has no cargo side effect.
 
 ## Repository / deployment
 
@@ -153,13 +172,15 @@ The project keeps the supplied Mantis GitHub/PlatformIO structure and the suppli
 
 The workflow directory is intentionally preserved exactly as supplied by the project template.
 
-### Host soak test
+### Host tools
 
-`tools/host/run.sh` compiles the real `src/` logic against small desktop stubs and flies a bot pilot through several simulated hours per seed. It fails on softlocks (a combat, mining or dive that never finishes), broken sheet invariants, or non-ASCII text reaching the display font. It needs only `g++`.
+`tools/host/` compiles the real `src/` game logic against small desktop stubs. It needs only `g++`.
 
 ```text
-tools/host/run.sh        # 6 seeds x 2 simulated hours
+tools/host/run.sh             # soak: a bot pilot flies 6 seeds x 2 simulated hours
 ```
+
+The soak fails on a stuck trip, a theater that never resolves, NaN positions, broken sheet ranges, or non-ASCII text reaching the display font. `docksweep.cpp` tests the docking computer from random approaches. `snap.cpp` + `render.py` render scripted frames of every state to PNG for a look check.
 
 ### Local build
 

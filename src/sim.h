@@ -58,6 +58,8 @@ void applyOpportunity(const Opportunity &op);
 // A deep landmark becomes truly persistent only after the pilot discovers it.
 void discoverLandmark(uint32_t id);
 bool landmarkDiscovered(uint32_t id);
+// 0 if never charted, else 1 + (life number when first charted) % 120
+int landmarkChartedLife(uint32_t id);
 
 // Small hidden world clock used to make stations and encounters evolve.
 uint32_t worldTick();

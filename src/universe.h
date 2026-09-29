@@ -36,6 +36,8 @@ struct GateOffer {
 static const int MAX_GATE_HAND = 8;
 // Build local gate hand near a station / pocket using pilot knowledge + unknowns + deep persistents
 int buildGateHand(uint8_t localBand, GateOffer *out, int maxOut);
+// How deep a dive a named place needs (1..4); stable within one universe.
+uint8_t placeDepth(const char *name);
 
 // ---- encounter weight hints for flight layer ----
 enum EncounterClass : uint8_t {
