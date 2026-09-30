@@ -1674,13 +1674,13 @@ static void updateInput() {
       return (v < 0 ? -1.f : 1.f) * (a * 0.45f + a * a * 0.55f);
     };
     // Device tip: X → pitch stick, Y → yaw stick (flip signs on device if mirrored)
-    tiltY = tiltY * 0.8f + shape(ax) * 0.2f;   // pitch
-    tiltX = tiltX * 0.8f + shape(ay) * 0.2f;   // yaw
+    tiltY = tiltY * 0.8f + shape(ay) * 0.2f;   // pitch
+    tiltX = tiltX * 0.8f + shape(ax) * 0.2f;   // yaw
     // Steering-wheel roll: gyro about Z, intentional deadzone + ease-in
     float gz = d.gyro.z;   // if no roll on device, try d.gyro.x or d.gyro.y
     float ga = fabsf(gz);
     float twist = 0.f;
-    const float dead = 0.15f;
+    const float dead = 0.45f;
     if (ga > dead) {
       float u = clampf((ga - dead) / 0.8f, 0.f, 1.f);
       u = u * u;
