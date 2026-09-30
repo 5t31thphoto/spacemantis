@@ -1,14 +1,148 @@
 <!DOCTYPE html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SpaceMantis — M5Stack Core2</title>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SpaceMantis — by BasaltSoftWorks</title>
+<meta name="description" content="A roguelike space-career game for M5Stack Core2. Lost in space. No map. Dive deeper.">
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="assets/favicon.png" sizes="64x64">
+<link rel="icon" type="image/png" href="assets/favicon-32.png" sizes="32x32">
+<link rel="icon" type="image/png" href="assets/favicon-16.png" sizes="16x16">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
 <style>
-:root{--bg:#03070a;--panel:#091217;--teal:#36e6c0;--blue:#4e9dff;--lime:#9dff7a;--text:#e6f3f1;--dim:#79918e;--red:#ff6565}
-*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 50% 0,#0b2630 0,transparent 55%),var(--bg);color:var(--text);font:16px system-ui,sans-serif;line-height:1.5}header{text-align:center;padding:30px 18px 22px;border-bottom:1px solid #16434a}h1{margin:0;color:var(--teal);letter-spacing:.14em;font-size:2.1rem}.tag{color:var(--dim);margin:8px 0 0}main{max-width:720px;margin:auto;padding:22px 15px 50px}section{background:var(--panel);border:1px solid #18323a;border-radius:12px;padding:18px;margin:0 0 14px}h2{color:var(--teal);font-size:1.1rem;margin:0 0 8px}p,li{color:#c4d4d2}.btn{display:inline-block;border:1px solid var(--teal);border-radius:8px;padding:12px 18px;color:var(--text);background:#0d3439;text-decoration:none;font-weight:700;margin:5px 7px 5px 0}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.card{padding:11px;background:#0b1b21;border-left:3px solid var(--teal);border-radius:7px}.card b{color:var(--lime)}@media(max-width:560px){.grid{grid-template-columns:1fr}}footer{text-align:center;color:var(--dim);padding:18px}
-</style><script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script></head>
-<body><header><h1>SPACEMANTIS</h1><p class="tag">A roguelike space-career game for M5Stack Core2</p></header><main>
-<section><h2>The premise</h2><p>You are lost in space. There is no galaxy map and no plotted course. You fly, encounter things, make opportunistic decisions, and use gates to dive through subspace and resurface somewhere else.</p><p>When you are destroyed, the universe is wiped. Your pilot, career and fitted capabilities survive. Most place knowledge does not.</p></section>
-<section><h2>The flight view</h2><ul><li><b>Touch drag</b> — yaw / roll; it never drags the sky.</li><li><b>Tilt</b> — steer relative to your captured flight attitude.</li><li><b>Fly gates</b> — labeled gates are things you have heard about; unknown gates are pure discovery.</li><li><b>Three gates</b> — consecutive gates commit a dive/resurface.</li><li><b>Deeper space</b> — increasingly strange visuals, anomalies and persistent landmarks.</li></ul></section>
-<section><h2>The verbs</h2><div class="grid"><div class="card"><b>HAIL</b><br>Parley, trade, bluff, receive rumors.</div><div class="card"><b>ATTACK</b><br>Simple combat resolve.</div><div class="card"><b>DOCK</b><br>Auto-approach a station and commit.</div><div class="card"><b>DISCOVER</b><br>Fly into unknown gates and landmarks.</div></div></section>
-<section><h2>Install on Core2</h2><p>Chrome or Edge with a USB data connection.</p><esp-web-install-button manifest="firmware/manifest.json"><button slot="activate" class="btn">Install SpaceMantis</button><span slot="unsupported">Use Chrome or Edge for USB install.</span></esp-web-install-button><a class="btn" href="firmware/firmware-merged.bin" download>Download firmware</a></section>
-</main><footer>SpaceMantis · M5Stack Core2</footer></body></html>
+:root{
+  --bg:#03070a; --panel:#091217; --teal:#36e6c0; --blue:#4e9dff;
+  --lime:#9dff7a; --mag:#e050c8; --text:#e6f3f1; --dim:#79918e; --red:#ff6565;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; color:var(--text); font:16px system-ui,sans-serif; line-height:1.55;
+  background:
+    radial-gradient(ellipse at 70% 10%, #1a0a22 0%, transparent 45%),
+    radial-gradient(ellipse at 20% 0%, #0b2630 0%, transparent 50%),
+    var(--bg);
+}
+header{
+  display:grid; grid-template-columns:1fr auto; gap:18px; align-items:center;
+  max-width:900px; margin:0 auto; padding:28px 18px 20px;
+  border-bottom:1px solid #16434a;
+}
+@media(max-width:640px){ header{ grid-template-columns:1fr; text-align:center } }
+.brand{ display:flex; gap:14px; align-items:center; flex-wrap:wrap }
+@media(max-width:640px){ .brand{ justify-content:center } }
+.brand img.favicon-hero{
+  width:56px; height:56px; image-rendering:pixelated; image-rendering:crisp-edges;
+  filter: drop-shadow(0 0 12px rgba(224,80,200,.35));
+}
+h1{ margin:0; color:var(--teal); letter-spacing:.14em; font-size:1.85rem }
+.tag{ color:var(--dim); margin:6px 0 0; font-size:.95rem }
+.by{ color:var(--mag); font-size:.85rem; margin-top:4px; letter-spacing:.04em }
+.astro{
+  width:120px; height:auto; image-rendering:pixelated; image-rendering:crisp-edges;
+  filter: drop-shadow(0 8px 24px rgba(54,230,192,.2));
+}
+@media(max-width:640px){ .astro{ width:100px; margin:0 auto } }
+
+main{ max-width:900px; margin:auto; padding:22px 15px 50px }
+.hero-row{
+  display:grid; grid-template-columns:140px 1fr; gap:22px; align-items:center;
+  background:linear-gradient(135deg, #0a1520 0%, #120818 100%);
+  border:1px solid #18323a; border-radius:14px; padding:22px 20px; margin-bottom:16px;
+}
+@media(max-width:640px){ .hero-row{ grid-template-columns:1fr; text-align:center } }
+.hero-row .astro-lg{
+  width:130px; height:auto; image-rendering:pixelated;
+  justify-self:center;
+}
+.hero-copy h2{ margin:0 0 8px; color:var(--teal); font-size:1.15rem }
+.hero-copy p{ margin:0; color:#c4d4d2 }
+
+section{
+  background:var(--panel); border:1px solid #18323a; border-radius:12px;
+  padding:18px; margin:0 0 14px;
+}
+h2{ color:var(--teal); font-size:1.1rem; margin:0 0 8px }
+p,li{ color:#c4d4d2 }
+.btn{
+  display:inline-block; border:1px solid var(--teal); border-radius:8px;
+  padding:12px 18px; color:var(--text); background:#0d3439;
+  text-decoration:none; font-weight:700; margin:5px 7px 5px 0;
+}
+.btn:hover{ border-color:var(--mag); background:#1a1230 }
+.grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px }
+.card{ padding:11px; background:#0b1b21; border-left:3px solid var(--teal); border-radius:7px }
+.card b{ color:var(--lime) }
+@media(max-width:560px){ .grid{ grid-template-columns:1fr } }
+footer{
+  text-align:center; color:var(--dim); padding:18px 12px 28px;
+  border-top:1px solid #16434a; max-width:900px; margin:0 auto;
+}
+footer img{ width:28px; height:28px; vertical-align:middle; image-rendering:pixelated; margin-right:8px }
+</style>
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <img class="favicon-hero" src="assets/favicon.png" width="56" height="56" alt="SpaceMantis">
+    <div>
+      <h1>SPACEMANTIS</h1>
+      <p class="tag">A roguelike space-career game for M5Stack Core2</p>
+      <p class="by">by BasaltSoftWorks</p>
+    </div>
+  </div>
+  <img class="astro" src="assets/mantis-astronaut.png" alt="Mantis astronaut">
+</header>
+
+<main>
+  <div class="hero-row">
+    <img class="astro-lg" src="assets/mantis-astronaut.png" alt="">
+    <div class="hero-copy">
+      <h2>Lost in space. No map. Dive deeper.</h2>
+      <p>You fly, encounter ships and giants, commit through gates, and resurface somewhere else. When the hull goes, your escape pod is recovered far away — ranks and fit survive; the sky does not.</p>
+    </div>
+  </div>
+
+  <section>
+    <h2>The premise</h2>
+    <p>There is no galaxy map and no plotted course. Gates are things you have heard about — or pure discovery. Deeper subspace gets stranger. Chart a place once and its name can outlive the universe you lost.</p>
+  </section>
+
+  <section>
+    <h2>The flight view</h2>
+    <ul>
+      <li><b>Touch drag</b> — look around (yaw / pitch).</li>
+      <li><b>Tilt</b> — aim; twist for roll.</li>
+      <li><b>Gates &amp; portals</b> — thread rings, dive under, climb back.</li>
+      <li><b>Verbs</b> — hail, attack, dock, mine, scoop, chart.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>The verbs</h2>
+    <div class="grid">
+      <div class="card"><b>HAIL</b><br>Parley, trade, bluff, rumors.</div>
+      <div class="card"><b>ATTACK</b><br>Short combat resolve.</div>
+      <div class="card"><b>DOCK</b><br>Station board, work, gear.</div>
+      <div class="card"><b>CHART</b><br>Deep landmarks that can persist.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Install on Core2</h2>
+    <p>Chrome or Edge with a USB data cable.</p>
+    <esp-web-install-button manifest="firmware/manifest.json">
+      <button slot="activate" class="btn">Install SpaceMantis</button>
+      <span slot="unsupported">Use Chrome or Edge for USB install.</span>
+    </esp-web-install-button>
+    <a class="btn" href="firmware/firmware-merged.bin" download>Download firmware</a>
+  </section>
+</main>
+
+<footer>
+  <img src="assets/favicon-32.png" width="28" height="28" alt="">
+  SpaceMantis · by BasaltSoftWorks · M5Stack Core2
+</footer>
+</body>
+</html>
