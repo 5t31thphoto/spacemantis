@@ -38,6 +38,7 @@ struct Contract {
 };
 
 void contractsInit();
+void contractSetHere(const char *place);   // current location: jobs never point here
 Contract &contract();
 bool contractOffer(ContractKind prefer = CK_NONE);  // roll a new offer onto station board
 bool contractAccept(const Contract &offer);          // false if hold or purse refuses

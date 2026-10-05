@@ -8,9 +8,9 @@ struct TouchDetail {
   bool isPressed() const { return press; }
   bool wasReleased() const { return released; }
 };
-struct HostBtn { bool p = false; bool wasPressed() const { return p; } };
+struct HostBtn { bool p = false, click = false, hold = false, down = false; bool wasPressed() const { return p; } bool isPressed() const { return down; } bool wasClicked() const { return click; } bool wasHold() const { return hold; } void setHoldThresh(int) {} };
 struct Vec3 { float x, y, z; };
-struct ImuData { Vec3 accel; };
+struct ImuData { Vec3 accel; Vec3 gyro; };
 struct HostDisplay { void setRotation(int) {} void setBrightness(int) {} };
 class M5Canvas {
  public:
@@ -25,6 +25,8 @@ class M5Canvas {
   void fillRoundRect(int x, int y, int w, int h, int, uint16_t c) { fillRect(x, y, w, h, c); }
   void drawRoundRect(int x, int y, int w, int h, int, uint16_t c) { drawRect(x, y, w, h, c); }
   void fillCircle(int x, int y, int r, uint16_t c) { hostLog("fc %d %d %d %u\n", x, y, r, c); }
+  void fillEllipse(int x, int y, int rx, int ry, uint16_t c) { hostLog("fe %d %d %d %d %u\n", x, y, rx, ry, c); }
+  void drawEllipse(int x, int y, int rx, int ry, uint16_t c) { hostLog("de %d %d %d %d %u\n", x, y, rx, ry, c); }
   void drawCircle(int x, int y, int r, uint16_t c) { hostLog("dc %d %d %d %u\n", x, y, r, c); }
   void drawLine(int a, int b, int c2, int d, uint16_t c) { hostLog("dl %d %d %d %d %u\n", a, b, c2, d, c); }
   void drawPixel(int x, int y, uint16_t c) { hostLog("dp %d %d %u\n", x, y, c); }
@@ -40,7 +42,7 @@ class M5Canvas {
   int cx_ = 0, cy_ = 0, size_ = 1; uint16_t col_ = 0xFFFF;
 };
 struct HostTouch { TouchDetail d; TouchDetail getDetail() { return d; } };
-struct HostImu { ImuData data{{0, 0, 1}}; bool update() { return true; } ImuData getImuData() { return data; } };
+struct HostImu { ImuData data{{0, 0, 1}, {0, 0, 0}}; bool update() { return true; } ImuData getImuData() { return data; } };
 struct HostPower { int last = 0; long changes = 0; void setVibration(int v) { if (v != last) changes++; last = v; } };
 struct HostCfg { bool output_power, internal_imu; };
 struct M5Class {

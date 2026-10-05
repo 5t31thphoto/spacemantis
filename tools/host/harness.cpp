@@ -22,16 +22,17 @@ static void aimAt(V3 p) {
   if (len(rel) < 35.f && loc.z < 0.75f) throttleT = 0.15f;
   else if (throttleT < 0.3f && loc.z > 0.9f) throttleT = 0.5f;
   float yawErr = atan2f(loc.x, loc.z), pitchUp = atan2f(loc.y, loc.z);
-  M5.Imu.data.accel.y = clampf(yawErr * 1.2f, -1.4f, 1.4f) + ((int)(br() % 100) - 50) * 0.002f;
-  M5.Imu.data.accel.x = clampf(pitchUp * 1.2f, -1.4f, 1.4f) + ((int)(br() % 100) - 50) * 0.002f;
+  // the current build's mapping: accel X is the yaw stick, accel Y the pitch stick
+  M5.Imu.data.accel.x = clampf(-yawErr * 1.2f, -1.4f, 1.4f) + ((int)(br() % 100) - 50) * 0.002f;
+  M5.Imu.data.accel.y = clampf(pitchUp * 1.2f, -1.4f, 1.4f) + ((int)(br() % 100) - 50) * 0.002f;
 }
 
 void M5Class::update() {
   g_ms += 8;
-  BtnA.p = BtnB.p = BtnC.p = false;
+  BtnA.p = BtnB.p = BtnC.p = false; BtnA.click = BtnA.hold = BtnB.click = BtnB.hold = BtnC.click = BtnC.hold = false;
   Touch.d = TouchDetail{};
   Imu.data.accel = {0, 0, 1};
-  if (endingOpen) { BtnA.p = true; return; }
+  if (endingOpen || bootOpen || lostOpen) { BtnA.p = true; BtnA.click = true; return; }
   if (dockAnim > 0) return;
   if (stationOpen) {
     if (++stationActions > 10 || br() % 50 == 0) { BtnA.p = true; stationActions = 0; return; }
@@ -83,7 +84,7 @@ int main(int argc, char **argv) {
   setup();
   rngState ^= seed * 747796405u;
   uint32_t end = g_ms + (uint32_t)(hours * 3600e3);
-  long frames = 0; int trips = 0, arrivals = 0, portals = 0, docks = 0, theaters = 0, maxLayer = 0, endings = 0;
+  long frames = 0; int jobsDone = 0, trips = 0, arrivals = 0, portals = 0, docks = 0, theaters = 0, maxLayer = 0, endings = 0;
   int32_t minCr = 1 << 30, maxCr = 0; uint32_t livesPrev = sm::sheet().lives; char lastCause[112] = ""; std::map<std::string,int> causes;
   bool wasTrip = false, wasStation = false, wasTheater = false; int lastLayer = 0;
   uint32_t progressAt = g_ms; int lastLegs = -1, lastStep = -1;
@@ -108,6 +109,7 @@ int main(int argc, char **argv) {
     }
     wasTrip = tr.active; wasStation = stationOpen; wasTheater = theater != TH_NONE; lastLayer = layer;
     if (layer > maxLayer) maxLayer = layer;
+    { static char pb[112]=""; if (strcmp(pb,banner)) { if (!strncmp(banner,"JOB DONE",8)) jobsDone++; strcpy(pb,banner);} }
     if (sm::sheet().lives != livesPrev) { livesPrev = sm::sheet().lives; char k[40]; snprintf(k, sizeof k, "L%d:%.28s", lastLayer, lastCause); causes[k]++; }
     else if (bannerUntil > millis()) strncpy(lastCause, banner, sizeof lastCause - 1);
     sm::Pilot &p = sm::sheet();
@@ -128,9 +130,9 @@ int main(int argc, char **argv) {
   sm::Pilot &p = sm::sheet();
   int charted = 0; for (int i = 0; i < sm::landmarkCount(); i++) if (sm::landmarkDiscovered(sm::landmarkAt(i)->id)) charted++;
   int ranks = 0; for (int i = 0; i < sm::CR_COUNT; i++) ranks += p.rank[i];
-  printf("seed %u: trips %d arrivals %d portals %d docks %d theaters %d maxLayer %d lives %lu cr %ld (max %ld) ranks %d charted %d/%d ending %s text %d motorChanges %ld maxTheater %.1fs\n",
+  printf("seed %u: trips %d arrivals %d portals %d docks %d theaters %d maxLayer %d lives %lu cr %ld (max %ld) ranks %d charted %d/%d jobs %d ending %s text %d motorChanges %ld maxTheater %.1fs\n",
          seed, trips, arrivals, portals, docks, theaters, maxLayer, (unsigned long)p.lives, (long)p.credits, (long)maxCr, ranks, charted,
-         sm::landmarkCount(), endings ? "yes" : "no", g_textIssues, M5.Power.changes, maxTheater);
+         sm::landmarkCount(), jobsDone, endings ? "yes" : "no", g_textIssues, M5.Power.changes, maxTheater);
   if (getenv("CAUSES")) for (auto &kv : causes) printf("   death x%d after: %s\n", kv.second, kv.first.c_str());
   return 0;
 }

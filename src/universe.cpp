@@ -127,7 +127,7 @@ int buildGateHand(uint8_t localBand, GateOffer *out, int maxOut) {
   auto push = [&](const char *name, uint8_t depth, uint8_t unknown, uint8_t persistent) {
     if (n >= maxOut || !name || !name[0]) return;
     for (int i = 0; i < n; i++)
-      if (strncmp(out[i].name, name, NAME_LEN) == 0) return;
+      if (sameName(out[i].name, name)) return;
     strncpy(out[n].name, name, NAME_LEN - 1);
     out[n].name[NAME_LEN - 1] = 0;
     out[n].depthRating = depth < 1 ? 1 : (depth > 4 ? 4 : depth);

@@ -1,7 +1,7 @@
 #include "harness_core.inc"
 void M5Class::update() { g_ms += 8; BtnA.p=BtnB.p=BtnC.p=false; Touch.d = TouchDetail{}; Imu.data.accel={0,0,1}; }
 int main() {
-  setup();
+  setup(); bootOpen = false;
   int ok = 0, n = 40; float worst = 0; int scrapes = 0;
   for (int k = 0; k < n; k++) {
     stationOpen = false; dockAnim = 0; theater = TH_NONE;

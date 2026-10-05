@@ -15,6 +15,7 @@ Contract s_offer{};
 Contract s_done{};
 bool s_doneFresh = false;
 uint32_t s_lastHeatTick = 0;
+char s_here[NAME_LEN] = "";   // where the pilot is now: never a destination
 
 const char *kindTitle(ContractKind k) {
   switch (k) {
@@ -73,17 +74,19 @@ bool roll(Contract &o, ContractKind k) {
 
   if (hasDest(k)) {
     if (k == CK_DEPTHRUN) {
-      strncpy(o.dest, placeName(urand(), DEPTH_DEEP, false), NAME_LEN - 1);
+      do { strncpy(o.dest, placeName(urand(), DEPTH_DEEP, false), NAME_LEN - 1); } while (sameName(o.dest, s_here));
       o.destDepth = (uint8_t)urand(2, 3);
     } else {
       GateOffer hand[6];
       int n = buildGateHand(DEPTH_REAL, hand, 6);
       int idx = n > 0 ? (int)(urand() % (uint32_t)n) : -1;
-      if (idx >= 0 && !hand[idx].persistent) {
+      // a delivery is never to the place you are standing in, nor to a deep landmark
+      for (int k = 0; k < n && idx >= 0 && (hand[idx].persistent || sameName(hand[idx].name, s_here)); k++) idx = (idx + 1) % n;
+      if (idx >= 0 && !hand[idx].persistent && !sameName(hand[idx].name, s_here)) {
         strncpy(o.dest, hand[idx].name, NAME_LEN - 1);
         o.destDepth = hand[idx].depthRating;
       } else {
-        strncpy(o.dest, placeName(urand(), DEPTH_REAL, false), NAME_LEN - 1);
+        do { strncpy(o.dest, placeName(urand(), DEPTH_REAL, false), NAME_LEN - 1); } while (sameName(o.dest, s_here));
         o.destDepth = 1;
       }
     }
@@ -144,6 +147,11 @@ void contractsInit() {
 }
 
 Contract &contract() { return s_c; }
+
+void contractSetHere(const char *place) {
+  strncpy(s_here, place ? place : "", NAME_LEN - 1);
+  s_here[NAME_LEN - 1] = 0;
+}
 bool contractOffer(ContractKind prefer) { return roll(s_offer, prefer); }
 
 bool contractAccept(const Contract &offer) {
@@ -204,7 +212,7 @@ void contractOnGate(const char *label, uint8_t band, bool unknown) {
   bool arrival = label && label[0];
   if ((s_c.kind == CK_SURVEY || s_c.kind == CK_TOUR) && arrival && unknown) { step(); return; }
   if (s_c.kind == CK_ESCORT && !arrival && band <= DEPTH_SHALLOW) { step(); return; }
-  if (hasDest(s_c.kind) && arrival && strncmp(s_c.dest, label, NAME_LEN) == 0) {
+  if (hasDest(s_c.kind) && arrival && sameName(s_c.dest, label)) {
     s_c.progress = s_c.need;
     complete();
   }

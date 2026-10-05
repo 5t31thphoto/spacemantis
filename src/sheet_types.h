@@ -158,4 +158,18 @@ struct DepthAbility {
   float   glitchRisk;      // 0..1 if attempting `attemptBand`
 };
 
+// Place names travel through the game in mixed case (rumors, the board) and in
+// upper case (gate labels, the HUD). They are the same place either way.
+inline bool sameName(const char *a, const char *b) {
+  if (!a || !b) return false;
+  for (int i = 0; i < NAME_LEN; i++) {
+    char x = a[i], y = b[i];
+    if (x >= 'a' && x <= 'z') x = (char)(x - 32);
+    if (y >= 'a' && y <= 'z') y = (char)(y - 32);
+    if (x != y) return false;
+    if (!x) return true;
+  }
+  return true;
+}
+
 }  // namespace sm

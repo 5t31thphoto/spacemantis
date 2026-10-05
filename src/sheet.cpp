@@ -277,7 +277,7 @@ static bool addNameTag(NameTag *arr, uint8_t *n, uint8_t maxN,
                        const char *name, uint8_t depthHint, uint8_t ttl, uint8_t kind) {
   if (!name || !name[0] || *n >= maxN) return false;
   for (uint8_t i = 0; i < *n; i++) {
-    if (strncmp(arr[i].name, name, NAME_LEN) == 0) {
+    if (sameName(arr[i].name, name)) {
       arr[i].depthHint = depthHint;
       if (ttl > arr[i].ttl) arr[i].ttl = ttl;
       return true;

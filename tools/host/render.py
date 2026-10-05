@@ -21,6 +21,8 @@ for path in sorted(glob.glob('snaps/*.log')):
             elif k=='dr': x,y,w,h,c=map(int,p[1:6]); d.rectangle([x,y,x+w-1,y+h-1], outline=c565(c))
             elif k=='fc': x,y,r,c=map(int,p[1:5]); d.ellipse([x-r,y-r,x+r,y+r], fill=c565(c))
             elif k=='dc': x,y,r,c=map(int,p[1:5]); d.ellipse([x-r,y-r,x+r,y+r], outline=c565(c))
+            elif k=='fe': x,y,rx,ry,c=map(int,p[1:6]); d.ellipse([x-rx,y-ry,x+rx,y+ry], fill=c565(c))
+            elif k=='de': x,y,rx,ry,c=map(int,p[1:6]); d.ellipse([x-rx,y-ry,x+rx,y+ry], outline=c565(c))
             elif k=='dl': a,b,e,f,c=map(int,p[1:6]); d.line([a,b,e,f], fill=c565(c))
             elif k=='dp': x,y,c=map(int,p[1:4]); d.point((x,y), fill=c565(c))
             elif k=='ft': a=list(map(int,p[1:8])); d.polygon([(a[0],a[1]),(a[2],a[3]),(a[4],a[5])], fill=c565(a[6]))

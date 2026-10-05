@@ -26,6 +26,10 @@ SpaceMantis is an Elite-like game with the spreadsheet hidden underneath the fli
 - **Throttle:** the slider on the right edge. Drag it; there is a soft detent at cruise. Low is all stop, high is boost.
 - **Tap:** target anything in space. Its verbs appear beside it.
 - **A:** next target. **B:** re-center the tilt pose. **C:** snap the throttle to cruise.
+- **Hold B:** the status screen: a Liminar Transit pilot license (records the escape pod keeps: bank, ranks, fixed points) over a diagnostic of this hull (lost with it: condition, hold, fitted systems, depth rating). A visual reference only; any tap or button closes it, and the world waits.
+- **Hold C (on the status screen):** the pilot journal and your active lead. Hold C again for the license.
+- **Hold A:** the map, the pilot's memory of subspace lanes drawn as *the deep is small* (real space outside, the Deep Cove at the centre). Places you have been sit on the rim in network order; gates you have seen hang outside them; rumors are tethered to where you heard them; fixed points sit on their rings. Tap a place to trace the remembered way from here. Hold A again for *this system*: star, bodies, dock, every gate here and who built it, or in the deep what the scanner picks up. Visual reference only.
+- **Quick taps** of A and B act on release, so a hold never also does the tap.
 - **Reticle / alignment:** light assistance exists only when nearly threading a gate or portal: a nudge, not an autopilot.
 - **Gate threading:** a gate only counts when the ship actually passes through the ring. Missing one does not select it: the ring stays where it is, so come round and fly it again.
 
@@ -180,7 +184,7 @@ The workflow directory is intentionally preserved exactly as supplied by the pro
 tools/host/run.sh             # soak: a bot pilot flies 6 seeds x 2 simulated hours
 ```
 
-The soak fails on a stuck trip, a theater that never resolves, NaN positions, broken sheet ranges, or non-ASCII text reaching the display font. `docksweep.cpp` tests the docking computer from random approaches. `snap.cpp` + `render.py` render scripted frames of every state to PNG for a look check.
+The soak fails on a stuck trip, a theater that never resolves, NaN positions, broken sheet ranges, or non-ASCII text reaching the display font. `docksweep.cpp` tests the docking computer from random approaches. `snap.cpp` + `render.py` render scripted frames of every state to PNG for a look check. `tests.sh` runs the focused tests: job completion, lanes and the atlas, saves across power cycles, and the deep encounters.
 
 ### Local build
 
@@ -191,3 +195,17 @@ pio run -e m5stack-core2
 ### Web flasher
 
 The Pages site contains the generated merged firmware and an `esp-web-tools` installer for compatible browsers.
+
+## Places keep their lanes
+
+Arriving somewhere for the first time deals it its own gates: mostly to places nobody has heard of, sometimes back to a name you have only seen. After that a place keeps the same lanes (and the same dock, or lack of one) until the escape pod launches. The place you came from always offers the gate back. A rumor opens a new lane from wherever you heard it. The map shows exactly this memory, and wipes with it; charted fixed points survive.
+
+## Saving
+
+With an SD card in the Core2, the game keeps `/spacemantis-saves/pilot.sav` (the whole game, including where you are and how far into a dive), a readable `journal.txt`, and a `README.txt`. It saves on meaningful events and every half minute, and on power-up picks up where you left it. Internal flash keeps a mirror, so no card means nothing is lost.
+
+- **New game:** hold **A + C** on the title screen for two seconds. The bar turns red just before the save is cleared. Or delete `pilot.sav` (only that file) from the card.
+
+## Below the roads
+
+Something lives down there. It is rare, and it never hurts the ship.

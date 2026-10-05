@@ -22,6 +22,12 @@
 #include "haptics.h"
 #include "mantis_pod_icon.h"
 #include "mantis_body_icon.h"
+#include "pilot_helmet_art.h"
+#include "atlas.h"
+#include "journal.h"
+#include "savefile.h"
+#include <Preferences.h>
+#include "ship_art.h"
 #include "trip.h"
 #include "sheet.h"
 #include "universe.h"
@@ -121,6 +127,8 @@ static float hitFlash = 0.f;             // red edge when the hull is struck
 
 // gravitational lens (screen space), set per frame by a collapsed star in view
 static bool lensOn = false;
+static bool alienLensOn = false;            // a visitor bends the deep around itself
+static float alienLX = 0, alienLY = 0, alienLR = 0;
 static float lensX = 0, lensY = 0, lensR = 0;
 
 static inline void applyLens(float &sx, float &sy) {
@@ -282,6 +290,7 @@ static float surfaceDist(const Obj &o) { return distTo(o) - o.radius; }
 // ============================================================
 static V3 sunDir{0.4f, 0.3f, 0.86f};
 static uint16_t sunCol = 0;
+static uint8_t sunType = 1;      // 0 orange, 1 yellow-white, 2 blue-white
 static V3 layerLight{0.3f, 0.8f, 0.5f};
 static char hereName[24] = "";     // what locals call this place
 static int target = -1;            // targeted object
@@ -352,6 +361,7 @@ static void buildSky(uint32_t seed) {
   sunDir = randDir();
   float st = rf(0, 1);
   sunCol = st < 0.3f ? rgb(255, 200, 140) : st < 0.8f ? rgb(255, 244, 220) : rgb(200, 220, 255);
+  sunType = st < 0.3f ? 0 : (st < 0.8f ? 1 : 2);
   rngState = keep;
 }
 
@@ -428,6 +438,17 @@ static void drawField(int l, float cx = 160, float cy = 120, float rClip = 1e9f)
       if (clip) { float xx = x + 2 - cx; if (xx * xx + yy > r2) continue; }
       int bi = by * BW + bx;
       float u = (x + 2 - 160.f) / FOCAL, v = -(y + 2 - 120.f) / FOCAL;
+      if (alienLensOn && !clip) {
+        float dx = x + 2 - alienLX, dy = y + 2 - alienLY, R = alienLR * 3.5f;
+        float r2 = dx * dx + dy * dy;
+        if (r2 < R * R) {
+          float r = sqrtf(r2), a = 1.f - r / R;
+          a = a * a * (2.2f * fsin(t * 1.7f) + 1.f);
+          float ca = fcos(a), sa = fsin(a);
+          u = (alienLX + dx * ca - dy * sa - 160.f) / FOCAL;
+          v = -(alienLY + dx * sa + dy * ca - 120.f) / FOCAL;
+        }
+      }
       V3 d = shipB.f + shipB.r * u + shipB.u * v;
       cv.fillRect(x + shift, y, BLK, BLK, fieldColor(l, bi, d, t));
     }
@@ -674,7 +695,41 @@ static void addBolt(float x0, float y0, float x1, float y1, uint16_t col) {
 // ============================================================
 //  the long arc and the money
 // ============================================================
-static void saveAll() { sm::sheetSave(); sm::contractsSave(); lastSave = millis(); }
+// Where you are, so a power cycle picks up right here.
+struct Session {
+  uint32_t magic;
+  uint8_t layer, station, docked, pad;
+  sm::Trip trip;
+  char here[24], origin[24];
+  float throttle;
+};
+static const uint32_t SESSION_MAGIC = 0x53455331u;   // "SES1"
+static bool sdDirty = false;
+static uint32_t sdLastWrite = 0;
+static uint8_t journalSeen = 0, journalHeadSeen = 0;
+static void captureSession(Session &ss);
+static void saveSessionNVS() {
+  Session ss; captureSession(ss);
+  Preferences prefs;
+  if (prefs.begin("sm_sess", false)) { prefs.putBytes("s", &ss, sizeof(ss)); prefs.end(); }
+}
+static void saveAll() {
+  sm::sheetSave(); sm::contractsSave(); sm::atlasSave(); sm::journalSave();
+  saveSessionNVS();
+  sdDirty = true;   // the card catches up within a moment (see serviceSD)
+  lastSave = millis();
+}
+static void serviceSD(bool force) {
+  if (!sm::sdReady() || !sdDirty) return;
+  if (!force && millis() - sdLastWrite < 1500) return;
+  Session ss; captureSession(ss);
+  if (sm::sdSaveGame(&ss, sizeof(ss))) {
+    sdDirty = false; sdLastWrite = millis();
+    if (sm::journal().count != journalSeen || sm::journal().head != journalHeadSeen) {
+      sm::sdWriteJournalText(); journalSeen = sm::journal().count; journalHeadSeen = sm::journal().head;
+    }
+  }
+}
 
 static void onDestroyedFlow();
 static bool checkDestroy() {
@@ -705,6 +760,19 @@ static int chartValue(uint8_t band) { return 70 * band * band; }
 static bool endingOpen = false;
 static bool lostOpen = false;
 static bool bootOpen = true;  // title card until first tap
+static bool statusOpen = false;  // long-press B: pilot license + ship diagnostic (visual reference only)
+static uint8_t statusPage = 0;   // 0 license + diagnostic, 1 journal + active lead (hold C)
+static float newGameHold = 0, newGameDone = 0;   // splash: hold A + C
+// Something in the deep, below the roads. Rare; no damage; you never see it clearly.
+struct AlienEncounter { bool active; uint8_t cls, outcome; float t, beatA, beatB, beatC; V3 p; bool applied; };
+static AlienEncounter alien{};
+static float alienPending = -1.f;       // seconds until it arrives (scheduled on entering a layer)
+static float alienCooldown = 0.f;       // game seconds before another can come
+static inline bool alienHolds() { return alien.active && alien.t >= 4.f && alien.t < 28.f; }   // power is out
+static bool mapOpen = false;     // long-press A: the atlas (visual reference only)
+static uint8_t mapPage = 0;      // 0 subspace memory, 1 this system (hold A again)
+static int mapTrace = -1;        // atlas place traced from here
+static char tripOrigin[24] = ""; // where the current trip began
 static char endingName[24] = "";
 static void showRecognition(const sm::Landmark *lm) {
   asciiCopy(endingName, sizeof(endingName), lm->name); upcase(endingName);
@@ -724,7 +792,8 @@ static void showRecognition(const sm::Landmark *lm) {
 static uint16_t gateColor(const Obj &g) {
   if (g.kind == K_DOCKGATE) return rgb(70, 150, 255);
   if (g.gflags & GF_JOB) return rgb(240, 200, 90);
-  if (g.gflags & (GF_FIXED | GF_LOCALNAME)) return rgb(230, 175, 80);
+  if (g.gflags & GF_FIXED) return rgb(185, 160, 255);        // charted deep landmark: lilac, never job-gold
+  if (g.gflags & GF_LOCALNAME) return rgb(230, 175, 80);
   if (g.gflags & GF_CHAIN) return layer == 0 ? rgb(110, 240, 200) : hsv(layerHue(layer) + 60, 0.55f, 0.95f);
   if (g.gflags & GF_RUMOR) return rgb(80, 225, 215);
   if (g.gflags & GF_KNOWN) return rgb(110, 230, 150);
@@ -847,16 +916,17 @@ static bool isRumor(const char *name) {
 
 // Named gates fan out across your view, the way a harbour lays out its lanes.
 static void placeDestGates(int want, V3 avoidDir = V3{0, 0, 0}) {
-  sm::GateOffer hand[sm::MAX_GATE_HAND];
-  int n = sm::buildGateHand(0, hand, sm::MAX_GATE_HAND);
-  if (n > want) n = want;
+  (void)want;   // a place keeps its own lanes until a wipe (see atlas)
+  sm::AtlasLane lanes[8];
+  int n = sm::atlasLanesHere(lanes, 8);
   sm::Contract &c = sm::contract();
   const char *names[8]; uint8_t depths[8], flags[8]; int m = 0;
   if (c.live && c.dest[0]) { names[m] = c.dest; depths[m] = c.destDepth; flags[m] = GF_DEST | GF_JOB | GF_KNOWN; m++; }
   for (int i = 0; i < n && m < 6; i++) {
-    if (c.live && strncmp(hand[i].name, c.dest, sm::NAME_LEN) == 0) continue;
-    names[m] = hand[i].name; depths[m] = hand[i].depthRating;
-    flags[m] = GF_DEST | (hand[i].unknown ? GF_UNKNOWN : (isRumor(hand[i].name) ? GF_RUMOR : GF_KNOWN)) | (hand[i].persistent ? GF_FIXED : 0);
+    if (c.live && sm::sameName(lanes[i].name, c.dest)) continue;
+    names[m] = lanes[i].name; depths[m] = lanes[i].depth;
+    flags[m] = GF_DEST | (lanes[i].fixed ? GF_FIXED : 0) |
+               (lanes[i].visited ? GF_KNOWN : (lanes[i].rumor ? GF_RUMOR : GF_UNKNOWN));
     m++;
   }
   float span = 2.3f;                       // about 130 degrees of sky
@@ -910,6 +980,14 @@ static void makeRealScene(const char *place, bool station) {
   buildSky(sm::universeSeed() ^ rnd());
   asciiCopy(hereName, sizeof(hereName), place && place[0] ? place : sm::placeName(sm::urand(), 0, false));
   upcase(hereName);
+  sm::contractSetHere(hereName);
+  { sm::Atlas &at = sm::atlas();
+    if (at.here == 255 || !sm::sameName(at.place[at.here].name, hereName)) sm::atlasVisit(hereName, nullptr, 1, false);
+    if (at.here != 255) {
+      sm::AtlasPlace &ap = at.place[at.here];
+      if (ap.flags & sm::AP_STATION_SET) station = (ap.flags & sm::AP_HAS_STATION) != 0;
+      else ap.flags |= (uint8_t)(sm::AP_STATION_SET | (station ? sm::AP_HAS_STATION : 0));
+    } }
   shipPos = V3{0, 0, 0}; prevShipPos = shipPos;
   shipB = Basis::facing(V3{0, 0, 1}, V3{0, 1, 0});
   layer = 0;
@@ -974,6 +1052,9 @@ static void makeLayerScene() {
       spawnLandmarkObj(lm, aheadPoint(rf(160, 230), (rf(0, 1) < 0.5f ? 1.f : -1.f) * rf(70, 120), rf(-40, 40)));
   if (layer == 4) rngState = keep ^ rnd();
   spawnTimer = rf(3, 6);
+  if (layer >= 3 && countKind(K_LANDMARK) == 0 && alienCooldown <= 0.f && !alien.active && rf(0, 1) < 0.07f)
+    alienPending = rf(6.f, 14.f);
+  else alienPending = -1.f;
 }
 
 // ---- contacts ----
@@ -1133,8 +1214,10 @@ static void finishTheater() {
     bool first = life == 0;
     bool otherLife = life != 0 && life != (int)(1 + sm::sheet().lives % 120);
     sm::discoverLandmark(lm->id);
+    sm::atlasFixedPoint(lm->name, lm->band);
+    if (first) { char jb[72]; snprintf(jb, sizeof(jb), "Charted %s. It was where the stories said.", lm->name); sm::journalAdd(jb); }
     sm::grantXp(sm::CR_DEPTHRUNNER, first ? (uint16_t)(18 + lm->band * 6) : 4);
-    if (otherLife) showRecognition(lm);
+    if (otherLife) { showRecognition(lm); char jb[72]; snprintf(jb, sizeof(jb), "%s again. Another sky, the same place.", lm->name); sm::journalAdd(jb); }
     else if (first) {
       int pay = chartValue(lm->band);
       sm::addCredits(pay);
@@ -1166,6 +1249,17 @@ static void finishTheater() {
   sm::ResolveIn in{attack ? sm::VERB_ATTACK : sm::VERB_HAIL, who, (uint8_t)layer, threat ? threat : (uint8_t)1};
   sm::ResolveOut out = sm::resolve(in);
   if (checkDestroy()) return;
+  if (out.rumorName[0]) {
+    bool lmRumor = sm::landmarkFind(out.rumorName) != nullptr;
+    sm::atlasRumor(out.rumorName, out.rumorDepth, lmRumor);
+    if (layer == 0) {   // the lane opens where you are
+      Obj *g = spawnGate(aheadPoint(rf(110, 140), rf(-50, 50), rf(-18, 18)), -shipB.f, out.rumorName, out.rumorDepth,
+                         (uint8_t)(GF_DEST | GF_RUMOR | (lmRumor ? GF_FIXED : 0)), 9.f);
+      if (g) g->o = Basis::facing(norm(shipPos - g->p), V3{0, 1, 0});
+      char nb[112]; snprintf(nb, sizeof(nb), "A NEW GATE: %s", g ? g->name : out.rumorName);
+      noteBanner(nb, 2000);
+    }
+  }
 
   char tail[48] = ""; size_t k = 0;
   int dc = (int)(p.credits - cr0), dh = (int)p.hull - hull0, df = (int)p.fuel - fuel0, dhold = (int)p.holdUsed - (int)hold0;
@@ -1373,6 +1467,7 @@ static void stationCommit() {
       char name[24]; asciiCopy(name, sizeof(name), sm::placeName(sm::urand(), 0, false));
       uint8_t d = sm::placeDepth(name);
       sm::rumorAdd(name, d, 14);
+      sm::atlasRumor(name, d, false);
       sm::grantXp(sm::CR_TRADER, 4);
       snprintf(buf, sizeof(buf), "RUMOR: %s. %s", name, sm::marketRumor(sm::worldPressure(), sm::urand()));
       setBanner(buf, 3000);
@@ -1421,12 +1516,26 @@ static void arriveReal(bool turnedBack) {
   char place[24];
   bool station;
   if (turnedBack) { asciiCopy(place, sizeof(place), sm::placeName(sm::urand(), 0, false)); station = rf(0, 1) < 0.35f; }
+  else if (tr.fixedPoint) {
+    // a fixed point is in the deep; the climb out surfaces somewhere new, in any sky
+    asciiCopy(place, sizeof(place), sm::placeName(sm::urand(), 0, false)); station = rf(0, 1) < 0.5f;
+  }
   else { asciiCopy(place, sizeof(place), tr.dest); station = tr.unknown ? rf(0, 1) < 0.45f : rf(0, 1) < 0.85f; }
+  upcase(place);
+  sm::atlasVisit(place, tr.fixedPoint ? tr.dest : tripOrigin, tr.destDepth, true);
+  { // a place you have been keeps its dock, or its lack of one
+    int ai = sm::atlasFind(place);
+    if (ai >= 0) {
+      sm::AtlasPlace &ap = sm::atlas().place[ai];
+      if (ap.flags & sm::AP_STATION_SET) station = (ap.flags & sm::AP_HAS_STATION) != 0;
+      else ap.flags |= (uint8_t)(sm::AP_STATION_SET | (station ? sm::AP_HAS_STATION : 0));
+    }
+  }
   makeRealScene(place, station);
   sm::onResurface();
   char b[112];
   if (!turnedBack) {
-    sm::knownGateAdd(tr.dest, tr.destDepth);
+    if (!tr.fixedPoint) sm::knownGateAdd(tr.dest, tr.destDepth);
     sm::contractOnGate(tr.dest, 0, tr.unknown != 0);
     // real-space exploring is experience; a deep way through is money
     if (tr.unknown) sm::grantXp(sm::CR_WANDERER, (uint16_t)(10 + tr.destDepth * 4));
@@ -1497,6 +1606,7 @@ static void threadGate(Obj &g) {
   if (g.gflags & GF_DEST) {
     // the choice: this is where we are going
     dockTarget = -1;
+    asciiCopy(tripOrigin, sizeof(tripOrigin), hereName);
     sm::tripBegin(g.name, g.depth, (g.gflags & GF_UNKNOWN) != 0, (g.gflags & GF_FIXED) != 0);
     char b[112]; snprintf(b, sizeof(b), "COURSE: %s - DEPTH %u", g.name, g.depth);
     setBanner(b, 2200);
@@ -1524,7 +1634,9 @@ static void onDestroyedFlow() {
   rngState = sm::universeSeed() ^ 0x9E3779B9u;
   sm::contractAbandon();
   sm::tripEnd();
-  theater = TH_NONE; stationOpen = false; endingOpen = false; dockAnim = 0; launchAnim = 0;
+  sm::atlasWipe();
+  { char jb[72]; snprintf(jb, sizeof(jb), "Pod launched. Life %lu ends. No names out here.", (unsigned long)sm::sheet().lives); sm::journalAdd(jb); }
+  theater = TH_NONE; stationOpen = false; mapOpen = false; statusOpen = false; endingOpen = false; dockAnim = 0; launchAnim = 0;
   queuedN = 0;
   hx::boom(1.f);
   crossFlash = 1.f;
@@ -1568,7 +1680,12 @@ static void cycleTarget() {
   if (best >= 0) hx::pop(0.22f, 0.015f);
 }
 
+static void mapTap(int x, int y);
+static void startNewGame();
+static void alienTick();
 static void handleTap(int x, int y) {
+  if (mapOpen) { mapTap(x, y); return; }
+  if (statusOpen) { statusOpen = false; hx::pop(0.15f, 0.01f); return; }
   if (bootOpen) {
     bootOpen = false;
     setBanner("FIND A GATE", 2000);
@@ -1625,7 +1742,7 @@ static void setThrottleFromY(int y) {
 static void updateInput() {
   M5.update();
   auto td = M5.Touch.getDetail();
-  bool flying = !stationOpen && !endingOpen && !lostOpen && !bootOpen && dockAnim <= 0;
+  bool flying = !stationOpen && !endingOpen && !lostOpen && !bootOpen && !statusOpen && !mapOpen && dockAnim <= 0 && !alienHolds();
   if (td.wasPressed()) {
     touchDown = true; dragging = false; sliding = false;
     touchX0 = touchLX = td.x; touchY0 = touchLY = td.y; touchT0 = millis();
@@ -1651,15 +1768,41 @@ static void updateInput() {
     touchDown = false; dragging = false; sliding = false;
   }
 
-  if (bootOpen || lostOpen || endingOpen) { if (M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed()) handleTap(0, 0); return; }
+  if (mapOpen) {
+    if (M5.BtnA.wasHold()) { mapPage ^= 1; mapTrace = -1; hx::pop(0.2f, 0.02f); }
+    else if (M5.BtnA.wasClicked() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed()) { mapOpen = false; hx::pop(0.15f, 0.01f); }
+    return;
+  }
+  if (statusOpen) {
+    if (M5.BtnC.wasHold()) { statusPage ^= 1; hx::pop(0.2f, 0.02f); }
+    else if (M5.BtnC.wasClicked() || M5.BtnA.wasPressed() || M5.BtnB.wasPressed()) { statusOpen = false; hx::pop(0.15f, 0.01f); }
+    return;
+  }
+  if (bootOpen) {
+    if (newGameDone > 0) { newGameDone -= dt; return; }
+    if (M5.BtnA.isPressed() && M5.BtnC.isPressed()) {
+      // both held: the bar fills; it turns red before the save is cleared
+      float before = newGameHold;
+      newGameHold += dt;
+      if (before < 1.5f && newGameHold >= 1.5f) hx::pop(0.35f, 0.03f);
+      if (newGameHold >= 2.0f) { startNewGame(); newGameHold = 0; newGameDone = 1.6f; hx::boom(0.7f); }
+      return;
+    }
+    newGameHold = 0;
+    if (M5.BtnA.wasClicked() || M5.BtnB.wasClicked() || M5.BtnC.wasClicked()) handleTap(0, 0);
+    return;
+  }
+  if (lostOpen || endingOpen) { if (M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed()) handleTap(0, 0); return; }
   if (stationOpen) {
     if (M5.BtnA.wasPressed()) launch();
     else if (M5.BtnB.wasPressed()) stationCommit();
     else if (M5.BtnC.wasPressed()) { stationChoice = (stationChoice + 1) % STATION_ROWS; hx::pop(0.12f, 0.01f); }
     return;
   }
-  if (M5.BtnA.wasPressed()) cycleTarget();
-  if (M5.BtnB.wasPressed()) { captureNeutral(); tiltX = tiltY = tiltRoll = 0; rateYaw = ratePitch = rateRoll = 0; setBanner("ATTITUDE CENTERED", 900); hx::pop(0.2f, 0.02f); }
+  if (M5.BtnA.wasHold()) { mapOpen = true; mapPage = 0; mapTrace = -1; hx::pop(0.25f, 0.02f); return; }
+  if (M5.BtnA.wasClicked()) cycleTarget();   // release edge: a hold never cycles
+  if (M5.BtnB.wasHold()) { statusOpen = true; statusPage = 0; hx::pop(0.25f, 0.02f); return; }
+  if (M5.BtnB.wasClicked()) { captureNeutral(); tiltX = tiltY = tiltRoll = 0; rateYaw = ratePitch = rateRoll = 0; setBanner("ATTITUDE CENTERED", 900); hx::pop(0.2f, 0.02f); }
   if (M5.BtnC.wasPressed()) { throttleT = 0.5f; setBanner("CRUISE", 700); hx::pop(0.2f, 0.02f); }
 
   if (!neutralValid) captureNeutral();
@@ -1852,6 +1995,7 @@ static void updateWorld() {
   sm::Contract done;
   if (sm::contractTakeCompleted(done)) {
     char b[112]; snprintf(b, sizeof(b), "JOB DONE: %s +%dcr", done.title, done.pay);
+    { char jb[72]; snprintf(jb, sizeof(jb), "Finished %s%s%s. Paid %d.", done.title, done.dest[0] ? " to " : "", done.dest, done.pay); sm::journalAdd(jb); }
     noteBanner(b, 2800); hx::swell(0.5f, 0.1f, 0.3f);
   }
   if (crossFlash > 0) crossFlash -= dt * 2.2f;
@@ -1860,7 +2004,15 @@ static void updateWorld() {
   fovPulse = layer >= 3 ? 1.f + 0.035f * (layer - 2) * sinf(tNow * 1.7f) + (layer == 4 ? deepFlash * 0.06f : 0.f) : 1.f;
 
   if (dockAnim > 0) { dockAnim -= dt; if (dockAnim <= 0) openBoard(); return; }
-  if (stationOpen || endingOpen || lostOpen || bootOpen) return;
+  if (stationOpen || endingOpen || lostOpen || bootOpen || statusOpen || mapOpen) return;
+  alienTick();
+  if (alienHolds() || (alien.active && alien.t >= 22.f)) {
+    // dead stick: the ship coasts to a halt, nothing else moves
+    shipSpeed *= expf(-dt * 1.4f); rateYaw = ratePitch = 0;
+    prevShipPos = shipPos; shipPos += shipB.f * (shipSpeed * dt);
+    for (auto &o : objs) if (o.kind != K_NONE) o.prevSide = dot(shipPos - o.p, o.o.f);
+    return;
+  }
   if (launchAnim > 0) launchAnim -= dt;
 
   // attitude: tilt aims, with a little mass
@@ -1937,6 +2089,7 @@ static void updateWorld() {
   for (int i = 0; i < boltN; ) { if (--bolts[i].life == 0) bolts[i] = bolts[--boltN]; else i++; }
   for (auto &b : booms) if (b.alive) { b.t += dt; if (b.t > 1.3f) b.alive = false; }
   if (millis() > lastSave + 30000) saveAll();
+  serviceSD(false);
 }
 
 // ============================================================
@@ -1994,7 +2147,7 @@ static void drawGateLike(Obj &o, float sx, float sy, float z) {
     sm::DepthAbility da = sm::depthQuery(o.depth);
     bool risky = o.depth > da.maxBand;
     char dl[28];
-    snprintf(dl, sizeof(dl), "DEPTH %u%s%s", o.depth, risky ? " !" : "", (o.gflags & GF_JOB) ? "  JOB" : (o.gflags & GF_UNKNOWN) ? "  ?" : "");
+    snprintf(dl, sizeof(dl), "DEPTH %u%s%s", o.depth, risky ? " !" : "", (o.gflags & GF_JOB) ? "  JOB" : (o.gflags & GF_FIXED) ? "  FIXED" : (o.gflags & GF_UNKNOWN) ? "  ?" : "");
     cv.setTextColor(risky ? rgb(255, 110, 90) : shade(col, 0.8f));
     cv.setCursor((int)sx - (int)strlen(dl) * 3, (int)(sy - r - 10)); cv.print(dl);
   } else if (r > 3 && (o.gflags & GF_LOCALNAME)) {
@@ -2015,7 +2168,8 @@ static void drawObjects() {
     while (j >= 0 && orderZ[j] < z) { order[j + 1] = order[j]; orderZ[j + 1] = orderZ[j]; j--; }
     order[j + 1] = oi; orderZ[j + 1] = z;
   }
-  lensOn = false;
+  lensOn = alienLensOn;
+  if (alienLensOn) { lensX = alienLX; lensY = alienLY; lensR = alienLR; }
   for (int k = 0; k < n; k++) {
     Obj &o = objs[order[k]];
     float sx, sy, z, outR;
@@ -2367,6 +2521,18 @@ static void drawBoot() {
   cv.print("lost in space");
   cv.setCursor(22, 190);
   cv.print("tap to continue");
+  cv.setTextColor(rgb(90, 104, 116));
+  cv.setCursor(118, 160);
+  cv.print("hold A + C: new game");
+  if (newGameHold > 0.f || newGameDone > 0.f) {
+    float u = newGameDone > 0.f ? 1.f : clampf(newGameHold / 2.0f, 0.f, 1.f);
+    bool red = u >= 0.75f;
+    cv.drawRect(118, 172, 180, 8, rgb(60, 70, 80));
+    cv.fillRect(119, 173, (int)(178 * u), 6, red ? rgb(230, 50, 40) : rgb(0, 115, 115));
+    cv.setTextColor(red ? rgb(255, 120, 100) : rgb(150, 200, 200));
+    cv.setCursor(118, 182);
+    cv.print(newGameDone > 0.f ? "save cleared. new pilot." : (red ? "clearing the saved game..." : "keep holding"));
+  }
 }
 
 static void drawMantisPodIcon(int ox, int oy) {
@@ -2405,6 +2571,702 @@ static void drawLost() {
   cv.printf("life %lu   tap to continue", (unsigned long)sm::sheet().lives);
 }
 
+
+// ============================================================
+//  status: pilot license (survives the pod) + ship diagnostic (this hull)
+//  A visual reference only — nothing here can be acted on.
+// ============================================================
+static void drawSprite565(const uint16_t *px, int w, int h, int ox, int oy) {
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++) {
+      uint16_t c = px[y * w + x];
+      if (c) cv.drawPixel(ox + x, oy + y, c);
+    }
+}
+
+static void statusBar(int x, int y, int w, int h, int v, int mx, uint16_t c) {
+  cv.drawRect(x, y, w, h, rgb(40, 50, 60));
+  int k = mx > 0 ? (w - 2) * clampf((float)v / mx, 0, 1) : 0;
+  if (k > 0) cv.fillRect(x + 1, y + 1, k, h - 2, c);
+}
+
+static void statusPips(int x, int y, int lit, int n, uint16_t on) {
+  for (int i = 0; i < n; i++) cv.fillRect(x + i * 5, y, 4, 5, i < lit ? on : rgb(40, 46, 56));
+}
+
+static void drawStatus() {
+  const sm::Pilot &p = sm::sheet();
+  const uint16_t TEAL = rgb(0, 115, 115), TEAL_D = rgb(0, 52, 56), TEAL_L = rgb(60, 170, 160);
+  const uint16_t MAG = rgb(93, 0, 93), MAG_L = rgb(150, 50, 150);
+  const uint16_t LIME = rgb(150, 225, 30), LIME_L = rgb(210, 255, 120), LILAC = rgb(185, 160, 255);
+  const uint16_t TXT = rgb(205, 215, 220), DIM = rgb(110, 124, 134);
+  char callsign[16];
+  snprintf(callsign, sizeof(callsign), "MANTIS-%04X", (unsigned)((ESP.getEfuseMac() >> 24) & 0xFFFF));
+  int charted = 0;
+  for (int i = 0; i < sm::landmarkCount(); i++) if (sm::landmarkAt(i) && sm::landmarkDiscovered(sm::landmarkAt(i)->id)) charted++;
+
+  cv.fillSprite(rgb(4, 6, 12));
+  cv.setTextSize(1);
+  // ---- pilot license: these records ride in the escape pod ----
+  cv.fillRoundRect(3, 3, 314, 106, 6, rgb(6, 14, 18));
+  cv.drawRoundRect(3, 3, 314, 106, 6, TEAL);
+  cv.fillRect(4, 4, 312, 12, MAG);
+  cv.setTextColor(LIME_L); cv.setCursor(9, 6); cv.print("LIMINAR TRANSIT - PILOT LICENSE");
+  cv.setTextColor(rgb(230, 190, 230)); cv.setCursor(252, 6); cv.print("POD RECORD");
+  cv.fillRect(8, 20, 76, 78, TEAL_D); cv.drawRect(8, 20, 76, 78, TEAL_L);
+  drawSprite565(PILOT_HELMET, PILOT_HELMET_W, PILOT_HELMET_H, 10, 22);
+  cv.setTextColor(LIME); cv.setCursor(8, 100); cv.print(callsign);
+  int x = 92;
+  cv.setTextColor(DIM); cv.setCursor(x, 21); cv.print("CALLSIGN");
+  cv.setTextColor(TXT); cv.setCursor(x + 54, 21); cv.print(callsign);
+  cv.setTextColor(DIM); cv.setCursor(x, 32); cv.print("LIFE");
+  cv.setTextColor(TXT); cv.setCursor(x + 54, 32); cv.printf("#%lu", (unsigned long)(p.lives + 1));
+  cv.setTextColor(DIM); cv.setCursor(x + 96, 32); cv.print("BANK");
+  cv.setTextColor(LIME); cv.setCursor(x + 124, 32); cv.printf("%ld cr", (long)p.credits);
+  cv.setTextColor(DIM); cv.setCursor(x, 43); cv.print("FIXED POINTS");
+  cv.setTextColor(LILAC); cv.setCursor(x + 78, 43); cv.printf("%d / %d", charted, sm::landmarkCount());
+  cv.drawLine(x, 54, 311, 54, TEAL_D);
+  static const char *careers[] = {"HAULER", "GUN HAND", "PROSPECTOR", "RESCUER", "TRADER", "WANDERER", "DEPTH RUNNER", "GHOST"};
+  // strongest careers first, two columns of four
+  int ord[sm::CR_COUNT];
+  for (int i = 0; i < sm::CR_COUNT; i++) ord[i] = i;
+  for (int i = 1; i < sm::CR_COUNT; i++) {
+    int k = ord[i], j = i - 1;
+    while (j >= 0 && p.rank[ord[j]] < p.rank[k]) { ord[j + 1] = ord[j]; j--; }
+    ord[j + 1] = k;
+  }
+  for (int i = 0; i < sm::CR_COUNT && i < 8; i++) {
+    int c = ord[i], r = p.rank[c];
+    int cx = x + (i / 4) * 112, cy = 58 + (i % 4) * 11;
+    cv.setTextColor(r ? TXT : DIM); cv.setCursor(cx, cy); cv.print(careers[c]);
+    statusPips(cx + 74, cy + 1, (r + 4) / 5, 4, LIME);   // a pip per five ranks (ranks run to 20)
+    if (r) { cv.setTextColor(DIM); cv.setCursor(cx + 96, cy); cv.printf("%d", r); }
+  }
+
+  // ---- ship diagnostic: this hull, lost with it ----
+  cv.fillRoundRect(3, 112, 314, 125, 6, rgb(8, 6, 14));
+  cv.drawRoundRect(3, 112, 314, 125, 6, MAG_L);
+  cv.fillRect(4, 113, 312, 12, TEAL_D);
+  cv.setTextColor(TEAL_L); cv.setCursor(9, 115); cv.print("SHIP DIAGNOSTIC - THIS HULL");
+  cv.setTextColor(DIM); cv.setCursor(230, 115); cv.print("RESETS ON LOSS");
+  for (int gx = 8; gx < 170; gx += 12) cv.drawLine(gx, 128, gx, 222, rgb(16, 22, 30));
+  for (int gy = 128; gy < 224; gy += 12) cv.drawLine(8, gy, 170, gy, rgb(16, 22, 30));
+  drawSprite565(SHIP_ART, SHIP_ART_W, SHIP_ART_H, 10, 134);
+  int X = 176;
+  struct G { const char *l; int v, mx; uint16_t c; } gs[] = {
+    {"HULL", p.hull, p.hullMax, TEAL_L}, {"FUEL", p.fuel, p.fuelCap, LIME}, {"HOLD", p.holdUsed, p.holdCap, MAG_L}};
+  for (int i = 0; i < 3; i++) {
+    bool low = i < 2 && gs[i].v * 4 < gs[i].mx;
+    cv.setTextColor(DIM); cv.setCursor(X, 130 + i * 14); cv.print(gs[i].l);
+    statusBar(X + 28, 131 + i * 14, 80, 6, gs[i].v, gs[i].mx, low ? rgb(255, 120, 70) : gs[i].c);
+    cv.setTextColor(TXT); cv.setCursor(X + 112, 130 + i * 14); cv.printf("%d", gs[i].v);
+  }
+  // depth rating: which layers this hull is rated to reach without glitching
+  int safe = sm::depthQuery(4).maxBand; if (safe > 4) safe = 4;
+  cv.setTextColor(DIM); cv.setCursor(X, 174); cv.print("RATED");
+  statusPips(X + 34, 175, safe, 4, LILAC);
+  cv.setTextColor(LILAC); cv.setCursor(X + 56, 174); cv.print(layerName(safe));
+  static const char *capShort[] = {"WEAPONS", "SHIELDS", "MINING", "SCANNER", "TRAILER", "STABILZ", "BULKHD", "CLOAK"};
+  for (int i = 0; i < sm::CAP_COUNT && i < 8; i++) {
+    int v = p.cap[i];
+    int cx = X + (i % 2) * 70, cy = 188 + (i / 2) * 11;
+    cv.setTextColor(v ? TXT : DIM); cv.setCursor(cx, cy); cv.print(capShort[i]);
+    cv.setTextColor(v ? LIME : DIM); cv.setCursor(cx + 46, cy);
+    if (v) cv.printf("MK%d", v); else cv.print("--");
+  }
+  cv.setTextColor(rgb(70, 95, 105)); cv.setCursor(10, 226); cv.print("tap to close");
+  cv.setTextColor(rgb(110, 130, 140)); cv.setCursor(226, 226); cv.print("hold C: journal");
+}
+
+// ============================================================
+//  journal + active lead (status page 2, hold C)
+// ============================================================
+static void drawJournal() {
+  const uint16_t TEAL = rgb(0, 115, 115), TEAL_D = rgb(0, 52, 56), TEAL_L = rgb(60, 170, 160), MAG = rgb(93, 0, 93);
+  const uint16_t LIME_L = rgb(210, 255, 120), GOLD = rgb(240, 200, 90), TXT = rgb(205, 215, 220), DIM = rgb(110, 124, 134);
+  cv.fillSprite(rgb(4, 6, 12));
+  cv.setTextSize(1);
+  // the active lead
+  cv.fillRoundRect(3, 3, 314, 62, 6, rgb(10, 10, 8));
+  cv.drawRoundRect(3, 3, 314, 62, 6, GOLD);
+  cv.fillRect(4, 4, 312, 12, rgb(70, 56, 16));
+  cv.setTextColor(rgb(255, 230, 150)); cv.setCursor(9, 6); cv.print("ACTIVE LEAD");
+  const sm::Contract &c = sm::contract();
+  const sm::Trip &tr = sm::trip();
+  if (c.live) {
+    cv.setTextColor(GOLD); cv.setCursor(9, 20); cv.printf("%s", c.title);
+    cv.setTextColor(LIME_L); cv.setCursor(240, 20); cv.printf("+%dcr", c.pay);
+    cv.setTextColor(TXT); cv.setCursor(9, 31);
+    if (c.dest[0]) cv.printf("to %s, depth %u", c.dest, c.destDepth); else cv.print(sm::contractHint(c));
+    cv.setTextColor(DIM); cv.setCursor(9, 42); cv.printf("progress %u/%u   %s", c.progress, c.need, c.dest[0] ? "find its gate and fly it" : "");
+  } else { cv.setTextColor(DIM); cv.setCursor(9, 24); cv.print("no lead. the boards are always hiring."); }
+  if (tr.active) { cv.setTextColor(TEAL_L); cv.setCursor(9, 53); cv.printf("COURSE %s  depth %u  %s", tr.dest, tr.destDepth, tr.ascending ? "climbing" : "diving"); }
+  // the journal: newest first
+  cv.fillRoundRect(3, 68, 314, 168, 6, rgb(6, 10, 14));
+  cv.drawRoundRect(3, 68, 314, 168, 6, TEAL);
+  cv.fillRect(4, 69, 312, 12, MAG);
+  cv.setTextColor(LIME_L); cv.setCursor(9, 71); cv.print("PILOT JOURNAL");
+  cv.setTextColor(rgb(230, 190, 230)); cv.setCursor(252, 71); cv.print("POD RECORD");
+  int y = 85;
+  for (int k = 0; y < 214; k++) {
+    const sm::JournalEntry *e = sm::journalNewest(k);
+    if (!e) { if (k == 0) { cv.setTextColor(DIM); cv.setCursor(9, y); cv.print("nothing written yet."); } break; }
+    cv.setTextColor(k == 0 ? TEAL_L : TEAL_D); cv.setCursor(9, y); cv.printf("L%u", e->life);
+    cv.setTextColor(k == 0 ? TXT : DIM);
+    printWrapped(33, y, 46, 2, 10, e->text);
+    y += (strlen(e->text) > 46 ? 21 : 11);
+  }
+  cv.setTextColor(rgb(70, 95, 105)); cv.setCursor(10, 226); cv.print("tap to close");
+  cv.setTextColor(rgb(110, 130, 140)); cv.setCursor(226, 226); cv.print("hold C: license");
+}
+
+// ============================================================
+//  the atlas: subspace memory drawn as "the deep is small"
+//  Rings are layers (real space outside, the cove at the centre). Places you
+//  have been sit on the rim, in network order; places only seen as gates sit
+//  just outside; fixed points sit on their own rings. No coordinates, ever.
+// ============================================================
+static const float MCX = 160.f, MCY = 116.f, MSX = 1.22f, MSY = 0.80f;
+static const float MR[5] = {96, 74, 54, 35, 16};
+static float mapX[sm::ATLAS_PLACES], mapY[sm::ATLAS_PLACES], mapAng[sm::ATLAS_PLACES];
+static uint8_t mapRole[sm::ATLAS_PLACES];   // 0 hidden, 1 rim, 2 outer, 3 fixed
+
+static uint16_t depthCol(int d) {
+  switch (d) { case 1: return rgb(80, 200, 215); case 2: return rgb(140, 110, 230); case 3: return rgb(205, 70, 190); default: return rgb(150, 225, 30); }
+}
+
+static void layoutMap() {
+  sm::Atlas &a = sm::atlas();
+  int vis[sm::ATLAS_PLACES], nv = 0;
+  for (int k = 0; k < sm::ATLAS_PLACES; k++) {
+    mapRole[k] = 0;
+    if ((a.place[k].flags & sm::AP_USED) && (a.place[k].flags & sm::AP_VISITED) && !(a.place[k].flags & sm::AP_FIXED)) vis[nv++] = k;
+  }
+  for (int i = 1; i < nv; i++) { int v = vis[i], j = i - 1; while (j >= 0 && a.place[vis[j]].lastSeen < a.place[v].lastSeen) { vis[j + 1] = vis[j]; j--; } vis[j + 1] = v; }
+  if (nv > sm::ATLAS_VISITED_KEEP) nv = sm::ATLAS_VISITED_KEEP;
+  bool inSet[sm::ATLAS_PLACES] = {false}, done[sm::ATLAS_PLACES] = {false};
+  for (int i = 0; i < nv; i++) inSet[vis[i]] = true;
+  // ring order: walk the network from here so linked places sit side by side
+  int order[sm::ATLAS_PLACES], no = 0, stack[sm::ATLAS_PLACES * 2], sp = 0;
+  int start = (a.here != 255 && inSet[a.here]) ? a.here : (nv ? vis[0] : -1);
+  if (start >= 0) stack[sp++] = start;
+  while (sp > 0 || no < nv) {
+    if (sp == 0) { for (int i = 0; i < nv; i++) if (!done[vis[i]]) { stack[sp++] = vis[i]; break; } if (sp == 0) break; }
+    int c = stack[--sp];
+    if (done[c]) continue;
+    done[c] = true; order[no++] = c;
+    for (auto &l : a.link) {
+      if (!(l.flags & sm::AL_USED)) continue;
+      int o = l.a == c ? l.b : (l.b == c ? l.a : -1);
+      if (o >= 0 && inSet[o] && !done[o] && sp < sm::ATLAS_PLACES * 2) stack[sp++] = o;
+    }
+  }
+  for (int i = 0; i < no; i++) {
+    int k = order[i];
+    mapAng[k] = i * 6.2831853f / (no > 0 ? no : 1);
+    mapX[k] = MCX + MR[0] * MSX * cosf(mapAng[k]); mapY[k] = MCY + MR[0] * MSY * sinf(mapAng[k]); mapRole[k] = 1;
+  }
+  // names seen as gates (and rumors) sit just outside the place they hang from
+  int perAnchor[sm::ATLAS_PLACES] = {0};
+  static const float off[] = {0.24f, -0.24f, 0.46f, -0.46f, 0.66f, -0.66f};
+  for (int k = 0; k < sm::ATLAS_PLACES; k++) {
+    const sm::AtlasPlace &p = a.place[k];
+    if (!(p.flags & sm::AP_USED) || mapRole[k] || (p.flags & sm::AP_VISITED)) continue;
+    int anchor = -1;
+    for (auto &l : a.link) {
+      if (!(l.flags & sm::AL_USED)) continue;
+      int o = l.a == k ? l.b : (l.b == k ? l.a : -1);
+      if (o >= 0 && mapRole[o] == 1) { anchor = o; break; }
+    }
+    if (anchor < 0) continue;
+    bool fixed = p.flags & sm::AP_FIXED;
+    int n = perAnchor[anchor]++;
+    float ang = mapAng[anchor] + off[n % 6] * (fixed ? 0.8f : 1.f);
+    float r = fixed ? MR[p.depth > 4 ? 4 : p.depth] : MR[0] + 14.f;
+    mapAng[k] = ang;
+    mapX[k] = MCX + r * MSX * cosf(ang); mapY[k] = MCY + r * MSY * sinf(ang);
+    mapRole[k] = fixed ? 3 : 2;
+  }
+  // fixed points with no surface thread this life still float on their rings
+  int loose = 0;
+  for (int k = 0; k < sm::ATLAS_PLACES; k++) {
+    const sm::AtlasPlace &p = a.place[k];
+    if (!(p.flags & sm::AP_USED) || mapRole[k] || !(p.flags & sm::AP_FIXED)) continue;
+    float ang = 0.7f + loose++ * 1.3f;
+    float r = MR[p.depth > 4 ? 4 : p.depth];
+    mapAng[k] = ang; mapX[k] = MCX + r * MSX * cosf(ang); mapY[k] = MCY + r * MSY * sinf(ang); mapRole[k] = 3;
+  }
+}
+
+static void mapDashed(float x0, float y0, float x1, float y1, uint16_t c, int on, int offp) {
+  float L = sqrtf((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+  if (L < 1) return;
+  for (float s = 0; s < L; s += on + offp) {
+    float e = fminf(L, s + on);
+    cv.drawLine((int)(x0 + (x1 - x0) * s / L), (int)(y0 + (y1 - y0) * s / L), (int)(x0 + (x1 - x0) * e / L), (int)(y0 + (y1 - y0) * e / L), c);
+  }
+}
+
+// a lane between two rim places bows inward as deep as it goes
+static void mapArc(int a, int b, int depth, uint16_t col, int style, int width) {
+  float x0 = mapX[a], y0 = mapY[a], x1 = mapX[b], y1 = mapY[b];
+  bool rimPair = mapRole[a] == 1 && mapRole[b] == 1;
+  float px = 0, py = 0;
+  int steps = rimPair ? 16 : 1;
+  float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
+  if (rimPair) {
+    float m = atan2f((cy - MCY) / MSY, (cx - MCX) / MSX);
+    float span = fabsf(fmodf(mapAng[a] - mapAng[b] + 9.42477796f, 6.2831853f) - 3.1415927f);
+    float rr = span > 0.5f ? MR[depth > 4 ? 4 : depth] : MR[0] - 10.f * depth;
+    cx = MCX + rr * MSX * cosf(m); cy = MCY + rr * MSY * sinf(m);
+  }
+  for (int k = 0; k <= steps; k++) {
+    float u = (float)k / steps;
+    float x = rimPair ? (1 - u) * (1 - u) * x0 + 2 * u * (1 - u) * cx + u * u * x1 : x0 + (x1 - x0) * u;
+    float y = rimPair ? (1 - u) * (1 - u) * y0 + 2 * u * (1 - u) * cy + u * u * y1 : y0 + (y1 - y0) * u;
+    if (k > 0) {
+      if (style == 0 || (style == 1 && (k & 1))) {
+        cv.drawLine((int)px, (int)py, (int)x, (int)y, col);
+        if (width > 1) cv.drawLine((int)px + 1, (int)py, (int)x + 1, (int)y, col);
+        if (width > 2) cv.drawLine((int)px, (int)py + 1, (int)x, (int)y + 1, col);
+      } else if (style == 2) mapDashed(px, py, x, y, col, 1, 3);
+      else if (style == 1 && !rimPair) mapDashed(px, py, x, y, col, 3, 3);
+    }
+    px = x; py = y;
+  }
+}
+
+static void drawMap() {
+  sm::Atlas &a = sm::atlas();
+  layoutMap();
+  const uint16_t TEAL_D = rgb(0, 52, 56), TEAL_L = rgb(60, 170, 160), LIME = rgb(150, 225, 30), LIME_L = rgb(210, 255, 120);
+  const uint16_t LILAC = rgb(185, 160, 255), GOLD = rgb(240, 200, 90), TXT = rgb(205, 215, 220), DIM = rgb(100, 114, 124), WHITE = rgb(245, 250, 240);
+  cv.fillSprite(rgb(4, 6, 12));
+  for (int i = 0; i < 5; i++) {
+    cv.fillEllipse((int)MCX, (int)MCY, (int)(MR[i] * MSX), (int)(MR[i] * MSY), rgb(4 + i * 3, 8 + i * 2, 14 + i * 4));
+    cv.drawEllipse((int)MCX, (int)MCY, (int)(MR[i] * MSX), (int)(MR[i] * MSY), rgb(14 + i * 6, 26 + i * 3, 34 + i * 6));
+  }
+  static const char *rn[] = {"SHALLOWS", "ROADS", "BELOW", "COVE"};
+  cv.setTextColor(rgb(56, 70, 80));
+  for (int i = 1; i < 5; i++) { cv.setCursor((int)MCX - (int)strlen(rn[i - 1]) * 3, (int)(MCY - MR[i] * MSY) + 2); cv.print(rn[i - 1]); }
+  // lanes
+  for (auto &l : a.link) {
+    if (!(l.flags & sm::AL_USED) || !mapRole[l.a] || !mapRole[l.b]) continue;
+    bool fixed = mapRole[l.a] == 3 || mapRole[l.b] == 3;
+    if (fixed) { mapDashed(mapX[l.a], mapY[l.a], mapX[l.b], mapY[l.b], rgb(120, 100, 190), 2, 3); continue; }
+    if (l.flags & sm::AL_TETHER) { mapDashed(mapX[l.a], mapY[l.a], mapX[l.b], mapY[l.b], TEAL_L, 1, 3); continue; }
+    bool flown = l.flags & sm::AL_FLOWN;
+    mapArc(l.a, l.b, l.depth, depthCol(l.depth), flown ? 0 : 1, flown && l.depth > 1 ? 2 : 1);
+  }
+  // the traced way from here
+  int path[sm::ATLAS_PLACES], pn = 0;
+  if (mapTrace >= 0 && a.here != 255) pn = sm::atlasPath(a.here, mapTrace, path, sm::ATLAS_PLACES);
+  for (int i = 0; i + 1 < pn; i++) {
+    int d = 1;
+    for (auto &l : a.link) if ((l.flags & sm::AL_USED) && ((l.a == path[i] && l.b == path[i + 1]) || (l.b == path[i] && l.a == path[i + 1]))) d = l.depth;
+    mapArc(path[i], path[i + 1], d, WHITE, 0, 3);
+  }
+  // places and names (names placed so they don't sit on each other)
+  int boxes[sm::ATLAS_PLACES][4], nb = 0;
+  const sm::Contract &c = sm::contract();
+  for (int pass = 0; pass < 2; pass++)
+    for (int k = 0; k < sm::ATLAS_PLACES; k++) {
+      if (!mapRole[k]) continue;
+      const sm::AtlasPlace &p = a.place[k];
+      bool here = k == a.here, job = c.live && sm::sameName(p.name, c.dest), traced = false;
+      for (int i = 1; i < pn; i++) if (path[i] == k) traced = true;
+      bool important = here || job || traced || k == mapTrace;
+      if ((pass == 0) != important) continue;   // the important names claim space first
+      int x = (int)mapX[k], y = (int)mapY[k];
+      uint16_t col = TXT;
+      if (here) { cv.drawCircle(x, y, 5, LIME_L); cv.fillCircle(x, y, 3, LIME); col = LIME; }
+      else if (mapRole[k] == 3) { cv.fillTriangle(x, y - 4, x + 4, y, x, y + 4, LILAC); cv.fillTriangle(x, y - 4, x - 4, y, x, y + 4, LILAC); col = LILAC; }
+      else if (job) { cv.fillRect(x - 3, y - 3, 7, 7, GOLD); col = GOLD; }
+      else if (p.flags & sm::AP_RUMOR) { cv.drawCircle(x, y, 3, TEAL_L); col = TEAL_L; }
+      else if (mapRole[k] == 2) { cv.fillCircle(x, y, 3, rgb(4, 6, 12)); cv.drawCircle(x, y, 3, TXT); col = DIM; }
+      else cv.fillCircle(x, y, 3, TXT);
+      if (traced || k == mapTrace) cv.drawCircle(x, y, 6, WHITE);
+      char lab[24]; asciiCopy(lab, sizeof(lab), p.name); upcase(lab);
+      if (mapRole[k] == 3 && strlen(lab) > 12) { char *sp2 = strchr(lab + 4, ' '); if (sp2) *sp2 = 0; }
+      if (p.flags & sm::AP_RUMOR) strncat(lab, " ?", sizeof(lab) - strlen(lab) - 1);
+      int w = (int)strlen(lab) * 6;
+      bool right = x >= (int)MCX;
+      int cand[4][2] = {{right ? x + 7 : x - 7 - w, y - 4}, {right ? x - 7 - w : x + 7, y - 4}, {x - w / 2, y - 13}, {x - w / 2, y + 6}};
+      for (int ci = 0; ci < 4; ci++) {
+        int lx = cand[ci][0], ly = cand[ci][1];
+        lx = lx < 1 ? 1 : (lx + w > 319 ? 319 - w : lx);
+        ly = ly < 14 ? 14 : (ly > 202 ? 202 : ly);
+        bool clash = false;
+        for (int b = 0; b < nb && !clash; b++)
+          clash = !(lx + w < boxes[b][0] || lx > boxes[b][2] || ly + 8 < boxes[b][1] || ly > boxes[b][3]);
+        if (clash && !(important && ci == 3)) continue;
+        cv.setTextColor(col); cv.setCursor(lx, ly); cv.print(lab);
+        if (nb < sm::ATLAS_PLACES) { boxes[nb][0] = lx - 1; boxes[nb][1] = ly - 1; boxes[nb][2] = lx + w + 1; boxes[nb][3] = ly + 9; nb++; }
+        break;
+      }
+    }
+  // header + way strip
+  int places = 0; for (int k = 0; k < sm::ATLAS_PLACES; k++) if (mapRole[k] == 1) places++;
+  cv.fillRect(0, 0, 320, 12, TEAL_D);
+  cv.setTextColor(TEAL_L); cv.setCursor(4, 2); cv.print("THE DEEP IS SMALL");
+  cv.setTextColor(DIM); cv.setCursor(196, 2); cv.printf("LIFE #%lu  %d PLACES", (unsigned long)(sm::sheet().lives + 1), places);
+  if (mapTrace >= 0) {
+    cv.fillRect(0, 203, 320, 23, rgb(18, 24, 30));
+    char way[160] = "WAY:"; size_t o = 4;
+    if (pn < 2) snprintf(way, sizeof(way), "NO REMEMBERED WAY FROM HERE");
+    else for (int i = 1; i < pn && o < sizeof(way) - 30; i++) {
+      int d = 1;
+      for (auto &l : a.link) if ((l.flags & sm::AL_USED) && ((l.a == path[i - 1] && l.b == path[i]) || (l.b == path[i - 1] && l.a == path[i]))) d = l.depth;
+      char nm[24]; asciiCopy(nm, sizeof(nm), a.place[path[i]].name); upcase(nm);
+      o += snprintf(way + o, sizeof(way) - o, "%s %s d%d", i > 1 ? " >" : "", nm, d);
+    }
+    cv.setTextColor(WHITE); printWrapped(3, 205, 52, 2, 10, way);
+  } else {
+    cv.setTextColor(DIM); cv.setCursor(4, 213); cv.print("solid flown  dashed seen gate  ? rumor");
+  }
+  cv.setTextColor(rgb(110, 130, 140)); cv.setCursor(4, 228); cv.print("hold A: this system");
+  cv.setTextColor(rgb(70, 95, 105)); cv.setCursor(160, 228); cv.print("tap a place: trace");
+}
+
+static void mapTap(int x, int y) {
+  if (mapPage == 0) {
+    layoutMap();
+    int best = -1; float bd = 15.f;
+    for (int k = 0; k < sm::ATLAS_PLACES; k++) {
+      if (!mapRole[k]) continue;
+      float d = sqrtf((mapX[k] - x) * (mapX[k] - x) + (mapY[k] - y) * (mapY[k] - y));
+      if (d < bd) { bd = d; best = k; }
+    }
+    if (best >= 0 && best != sm::atlas().here) { mapTrace = best; hx::pop(0.18f, 0.015f); return; }
+  }
+  mapOpen = false; hx::pop(0.15f, 0.01f);
+}
+
+// ============================================================
+//  this system (map page 2): what the scanner sees right here
+// ============================================================
+static const char *gateMaker(const char *name) {
+  // every lane was built by someone; one of them keeps an older calendar
+  uint32_t h = 2166136261u;
+  for (const char *c = name; *c; c++) { h ^= (uint8_t)(*c | 32); h *= 16777619u; }
+  switch (h % 11) { case 0: case 1: case 2: case 3: return "PORTEX"; case 4: case 5: case 6: return "MALTAPLEX";
+                    case 7: case 8: return "LIMINAR RELAY"; case 9: return "DESERET"; default: return "NO MAKER'S MARK"; }
+}
+
+static void sysRow(int &y, uint16_t glyph, const char *label, const char *detail, uint16_t col) {
+  if (y > 208) return;
+  cv.fillRect(8, y + 1, 6, 6, glyph);
+  cv.setTextColor(col); cv.setCursor(20, y); cv.print(label);
+  if (detail && detail[0]) { cv.setTextColor(rgb(110, 124, 134)); cv.setCursor(316 - (int)strlen(detail) * 6, y); cv.print(detail); }
+  y += 11;
+}
+
+static void distLabel(char *out, size_t n, float d) {
+  float m = d * 10.f;
+  if (m < 1000.f) snprintf(out, n, "%dm", (int)m); else snprintf(out, n, "%.1fkm", m / 1000.f);
+}
+
+static void drawSystemMap() {
+  const uint16_t TEAL_D = rgb(0, 52, 56), TEAL_L = rgb(60, 170, 160), LILAC = rgb(185, 160, 255), GOLD = rgb(240, 200, 90);
+  const uint16_t TXT = rgb(205, 215, 220), DIM = rgb(110, 124, 134), BLUE = rgb(70, 150, 255);
+  cv.fillSprite(rgb(4, 6, 12));
+  cv.fillRect(0, 0, 320, 12, TEAL_D);
+  cv.setTextColor(TEAL_L); cv.setCursor(4, 2);
+  char title[48];
+  if (layer == 0) snprintf(title, sizeof(title), "THIS SYSTEM - %s", hereName); else snprintf(title, sizeof(title), "%s", layerName(layer));
+  cv.print(title);
+  int y = 18; char d[24], l[64];
+  if (layer == 0) {
+    static const char *st[] = {"ORANGE STAR", "YELLOW-WHITE STAR", "BLUE-WHITE STAR"};
+    sysRow(y, sunCol, st[sunType], "the local sun", TXT);
+    for (auto &o : objs) if (o.kind == K_BODY) { distLabel(d, sizeof(d), surfaceDist(o)); sysRow(y, o.col, o.name, d, TXT); }
+    for (auto &o : objs) if (o.kind == K_STATION) { distLabel(d, sizeof(d), distTo(o)); snprintf(l, sizeof(l), "%s - docking", o.name); sysRow(y, BLUE, l, d, rgb(120, 180, 255)); }
+    int rocks = countKind(K_ROCK), ships = countKind(K_SHIP);
+    if (rocks) { snprintf(l, sizeof(l), "%d asteroids on scope", rocks); sysRow(y, rgb(150, 120, 80), l, "", TXT); }
+    if (ships) { snprintf(l, sizeof(l), "%d contacts on scope", ships); sysRow(y, rgb(200, 200, 210), l, "", TXT); }
+    y += 3; cv.drawLine(8, y, 312, y, rgb(20, 30, 40)); y += 4;
+    cv.setTextColor(DIM); cv.setCursor(8, y); cv.print("GATES IN THIS SYSTEM"); y += 11;
+    for (auto &o : objs) {
+      if (o.kind != K_GATE || !(o.gflags & GF_DEST)) continue;
+      const char *tag = (o.gflags & GF_JOB) ? "JOB" : (o.gflags & GF_FIXED) ? "FIXED" : (o.gflags & GF_RUMOR) ? "RUMOR" : (o.gflags & GF_KNOWN) ? "BEEN" : "NEW";
+      snprintf(l, sizeof(l), "%-14.14s d%u %-5s", o.name, o.depth, tag);
+      sysRow(y, gateColor(o), l, gateMaker(o.name), gateColor(o));
+    }
+  } else {
+    static const char *lore[5][2] = {
+      {"", ""},
+      {"The liminal wake. Sub-pirates drift here,", "between the surface and the roads."},
+      {"Worn lanes of the deep trade. Ghost fleet", "couriers keep to the dark edges."},
+      {"Deseret and Liminar are building something", "down here. Tunnelers camp in its shadow."},
+      {"Here the layer remembers itself: same light,", "same names, every life. The ghost fleet's home."}};
+    cv.setTextColor(TXT);
+    cv.setCursor(8, y); cv.print(lore[layer][0]); y += 10;
+    cv.setCursor(8, y); cv.print(lore[layer][1]); y += 14;
+    const sm::Trip &tr = sm::trip();
+    if (tr.active) { snprintf(l, sizeof(l), "COURSE %s", tr.dest); snprintf(d, sizeof(d), "d%u %s", tr.destDepth, tr.ascending ? "up" : "down"); sysRow(y, GOLD, l, d, GOLD); }
+    if (navObj >= 0 && objs[navObj].kind != K_NONE) {
+      distLabel(d, sizeof(d), distTo(objs[navObj]));
+      sysRow(y, objs[navObj].kind == K_PORTAL ? rgb(210, 110, 230) : rgb(110, 240, 200), objs[navObj].kind == K_PORTAL ? "PORTAL" : "NEXT GATE", d, TXT);
+    }
+    for (auto &o : objs) {
+      if (o.kind == K_BODY) { distLabel(d, sizeof(d), surfaceDist(o)); sysRow(y, o.col ? o.col : rgb(255, 200, 120), o.name, d, TXT); }
+      if (o.kind == K_LANDMARK) {
+        distLabel(d, sizeof(d), distTo(o)); sysRow(y, LILAC, o.name, d, LILAC);
+        for (int i = 0; i < sm::landmarkCount(); i++) {
+          const sm::Landmark *lm = sm::landmarkAt(i);
+          if (lm && (int)lm->id == o.lmId) {
+            char ln[112]; asciiCopy(ln, sizeof(ln), sm::landmarkLine(*lm, (uint32_t)o.lmId * 7u));
+            cv.setTextColor(DIM); printWrapped(20, y, 49, 2, 10, ln); y += 21;
+          }
+        }
+      }
+      if (o.kind == K_SHIP && o.ghost) sysRow(y, rgb(170, 190, 200), "GHOST FLEET hull", "running dark", TXT);
+    }
+    y += 3; cv.drawLine(8, y, 312, y, rgb(20, 30, 40)); y += 5;
+    cv.setTextColor(DIM); cv.setCursor(8, y); cv.print("SCANNER PICKS UP"); y += 11;
+    char w[112]; asciiCopy(w, sizeof(w), sm::deepWhisper((uint8_t)layer, (uint32_t)(millis() / 20000u) * 2654435761u));
+    cv.setTextColor(LILAC); printWrapped(20, y, 49, 3, 10, w);
+  }
+  cv.setTextColor(rgb(110, 130, 140)); cv.setCursor(4, 228); cv.print("hold A: subspace map");
+  cv.setTextColor(rgb(70, 95, 105)); cv.setCursor(226, 228); cv.print("tap to close");
+}
+
+// ============================================================
+//  the visitors: an encounter below the roads
+// ============================================================
+static const char *alienName(int c) { static const char *n[] = {"THE CHOIR", "THE LATTICE", "THE MOTH"}; return n[c % 3]; }
+
+static void alienBegin() {
+  alien = AlienEncounter{};
+  alien.active = true;
+  alien.cls = (uint8_t)(rnd() % 3);
+  alien.outcome = (uint8_t)(rnd() % 6);
+  alien.p = shipPos + shipB.f * 95.f + shipB.r * rf(-20, 20) + shipB.u * rf(-10, 10);
+  theater = TH_NONE; target = -1; dockTarget = -1;
+  setBanner("SOMETHING IS PACING YOU", 2600);
+}
+
+static void alienApply() {
+  sm::Pilot &p = sm::sheet();
+  const char *toast = "", *note = "";
+  uint8_t out = alien.outcome;
+  auto bump = [&](sm::CapId c) -> bool { uint8_t t = sm::capTier(c); if (t >= 10) return false; sm::earnCap(c, (uint8_t)(t + 1)); return true; };
+  if (out == 1 && !bump(sm::CAP_SHIELDS)) out = 5;
+  if (out == 2 && !bump(sm::CAP_STABILIZER)) out = 5;
+  if (out == 4 && !bump(sm::CAP_SCANNERS)) out = 5;
+  switch (out) {
+    case 0: sm::setFuel(p.fuelCap); toast = "SYSTEMS UP. FUEL READS FULL. YOU DID NOT FILL IT."; note = "fuel full when the lights came back."; break;
+    case 1: toast = "SHIELDS REPORT A NEW MARK. NOBODY INSTALLED IT."; note = "the shields are stronger. no idea how."; break;
+    case 2: toast = "THE STABILIZER HUMS A NOTE IT NEVER KNEW."; note = "the stabilizer sings now."; break;
+    case 3: sm::repairHull(p.hullMax); toast = "HULL INTEGRITY 100%. THE SCARS ARE GONE. ALL OF THEM."; note = "every scar on the hull is gone."; break;
+    case 4: toast = "SCANNERS SEE FURTHER NOW. SOMETHING LOOKED THROUGH THEM FIRST."; note = "it looked through my scanners."; break;
+    default: toast = "NOTHING IS MISSING. YOU CHECK TWICE. NOTHING IS MISSING."; note = "nothing taken. I checked twice."; break;
+  }
+  setBanner(toast, 5200);
+  char jb[72]; snprintf(jb, sizeof(jb), "%s held me in the dark. %s", alienName(alien.cls), note);
+  sm::journalAdd(jb);
+  sm::flagSet("visited", (int8_t)(sm::flagGet("visited") < 120 ? sm::flagGet("visited") + 1 : 120), true);
+  saveAll();
+}
+
+static void alienTick() {
+  if (alienCooldown > 0.f) alienCooldown -= dt;
+  if (!alien.active && alienPending > 0.f && layer >= 3 && !stationOpen) {
+    alienPending -= dt;
+    if (alienPending <= 0.f) { alienPending = -1.f; if (countKind(K_LANDMARK) == 0) alienBegin(); }
+  }
+  if (!alien.active) return;
+  float t0 = alien.t;
+  alien.t += dt;
+  float t = alien.t;
+  auto crossed = [&](float at) { return t0 < at && t >= at; };
+  // it comes in fast and stops too close
+  V3 hold = shipPos + shipB.f * 26.f + shipB.u * 3.f;
+  // it holds station on the ship the whole time: you cannot drift away from it
+  if (t < 22.f) alien.p = lerp3(alien.p, hold, clampf(dt * (t < 4.f ? 1.6f : 4.f), 0, 1));
+  if (crossed(4.f)) { hx::cut(0.6f); setBanner("POWER LOSS", 1800); }
+  if (crossed(6.5f)) {
+    static const char *scan[] = {"IT IS SINGING AT THE HULL", "IT IS MEASURING EVERYTHING", "IT IS TOUCHING THE SHIP ALL OVER"};
+    setBanner(scan[alien.cls], 3200);
+  }
+  if (crossed(15.f)) setBanner(alien.cls == 1 ? "THE GRID GOES THROUGH YOU" : alien.cls == 0 ? "THE NOTE IS INSIDE THE COCKPIT" : "THEY ARE ON THE GLASS", 3000);
+  // the alien rhythm: two pulse trains against each other (3 over 2), each visitor its own way
+  bool scanning = t >= 4.6f && t < 22.f;
+  float amp = t < 4.f ? 0.25f + 0.1f * t : (scanning ? 0.6f : 0.f);
+  if (amp > 0.f) {
+    alien.beatA -= dt; alien.beatB -= dt; alien.beatC -= dt;
+    float pa = alien.cls == 2 ? 0.27f : 0.6f, pb = pa * 2.f / 3.f;
+    if (alien.beatA <= 0) { hx::pop(amp, alien.cls == 1 ? 0.02f : 0.06f); alien.beatA += pa; }
+    if (alien.beatB <= 0) { hx::pop(amp * 0.6f, 0.03f); alien.beatB += pb; }
+    if (alien.cls == 0 && scanning) hx::hum(hx::HUM_DEEP, 0.32f, 1.66f, 0.05f);
+    if (alien.cls == 1 && scanning && alien.beatC <= 0) { hx::stutter(0.55f, 3, 0.05f); alien.beatC = 1.2f; }
+    if (alien.cls == 2 && scanning && alien.beatC <= 0) { hx::pop(0.2f, 0.01f); alien.beatC = rf(0.04f, 0.16f); }
+  }
+  // leaving: everything is pulled inward, then gone
+  if (crossed(22.f)) { hx::swell(1.f, 0.85f, 0.04f); setBanner("", 1); }
+  if (crossed(22.9f)) { hx::cut(0.5f); crossFlash = 1.f; }
+  if (crossed(27.6f)) setBanner("SYSTEMS REBOOTING...", 1400);
+  if (crossed(29.f) && !alien.applied) { alien.applied = true; alienApply(); }
+  if (t >= 30.f) { alien.active = false; alienCooldown = 480.f; }
+}
+
+// the scan itself, drawn over the world
+static void drawAlienScan(float ax, float ay) {
+  float t = alien.t;
+  if (t < 4.6f || t >= 22.f) return;
+  float k = t - 4.6f;
+  if (alien.cls == 0) {   // the choir: rings that pass through you
+    for (int i = 0; i < 4; i++) {
+      float r = fmodf(k * 95.f + i * 80.f, 340.f);
+      cv.drawCircle((int)ax, (int)ay, (int)r, hsv(170 + i * 30 + k * 40, 0.4f, 0.9f - r / 500.f));
+    }
+  } else if (alien.cls == 1) {   // the lattice: a grid that sweeps the cockpit
+    int sy = (int)fmodf(k * 70.f, 240.f), sx = (int)fmodf(k * 110.f, 320.f);
+    cv.drawLine(0, sy, 319, sy, rgb(255, 80, 230)); cv.drawLine(0, sy + 1, 319, sy + 1, rgb(120, 20, 110));
+    cv.drawLine(sx, 0, sx, 239, rgb(255, 80, 230));
+    if (fmodf(k, 1.2f) < 0.12f) for (int g = 0; g < 320; g += 32) { cv.drawLine(g, 0, g, 239, rgb(70, 10, 70)); if (g < 240) cv.drawLine(0, g, 319, g, rgb(70, 10, 70)); }
+  } else {   // the moth: dust that crawls toward the glass
+    for (int i = 0; i < 40; i++) {
+      float u = fmodf(k * 0.35f + i * 0.0251f, 1.f);
+      float a = i * 2.39996f + fsin(k * 3.f + i) * 0.4f;
+      int x = (int)(ax + cosf(a) * u * 260.f), y = (int)(ay + sinf(a) * u * 200.f);
+      cv.fillRect(x, y, 1 + (int)(u * 3), 1 + (int)(u * 3), hsv(280 + i * 3, 0.5f, 0.4f + u * 0.6f));
+    }
+  }
+}
+
+// the visitor: drawn through its own lens, three times over, never quite in focus
+static void drawAlienShape() {
+  float t = alien.t;
+  if (t >= 22.9f) return;
+  float collapse = t > 22.f ? 1.f - (t - 22.f) / 0.9f : 1.f;
+  float sc = 9.f * collapse;
+  for (int ghost = 0; ghost < 3; ghost++) {
+    float jx = fsin(t * 17.f + ghost * 2.1f) * 2.5f, jy = fcos(t * 13.f + ghost * 1.3f) * 2.5f;
+    uint16_t col = alien.cls == 0 ? hsv(180 + ghost * 40 + t * 30, 0.35f, 1.f - ghost * 0.25f)
+                 : alien.cls == 1 ? hsv(300 + ghost * 25, 0.7f, 1.f - ghost * 0.25f)
+                                  : hsv(265 + ghost * 30, 0.5f, 0.85f - ghost * 0.2f);
+    if (alien.cls == 0) {   // three rings in three planes
+      for (int r = 0; r < 3; r++) {
+        float px = 0, py = 0; bool pv = false;
+        for (int s = 0; s <= 24; s++) {
+          float a = s * 0.2618f + t * (0.6f + r * 0.3f);
+          V3 axis1 = r == 0 ? shipB.r : (r == 1 ? shipB.u : norm(shipB.r + shipB.f));
+          V3 axis2 = r == 2 ? shipB.u : shipB.f;
+          V3 w = alien.p + (axis1 * cosf(a) + axis2 * sinf(a)) * (sc * (1.f + 0.15f * r));
+          float x, y, z;
+          bool ok = project(w, x, y, z);
+          if (ok && pv) cv.drawLine((int)(px + jx), (int)(py + jy), (int)(x + jx), (int)(y + jy), col);
+          px = x; py = y; pv = ok;
+        }
+      }
+    } else if (alien.cls == 1) {   // a lattice that turns the wrong way
+      float sx[27], sy[27]; bool ok[27];
+      for (int i = 0; i < 27; i++) {
+        V3 m{(float)(i % 3 - 1), (float)((i / 3) % 3 - 1), (float)(i / 9 - 1)};
+        float a = t * 0.7f, b = -t * 0.45f;
+        V3 r1{m.x * cosf(a) - m.z * sinf(a), m.y, m.x * sinf(a) + m.z * cosf(a)};
+        V3 r2{r1.x, r1.y * cosf(b) - r1.z * sinf(b), r1.y * sinf(b) + r1.z * cosf(b)};
+        float z; ok[i] = project(alien.p + shipB.toWorld(r2 * sc * 0.8f), sx[i], sy[i], z);
+      }
+      for (int i = 0; i < 27; i++) {
+        int x = i % 3, y = (i / 3) % 3, zz = i / 9;
+        int nbr[3] = {x < 2 ? i + 1 : -1, y < 2 ? i + 3 : -1, zz < 2 ? i + 9 : -1};
+        for (int nidx : nbr) if (nidx >= 0 && ok[i] && ok[nidx]) cv.drawLine((int)(sx[i] + jx), (int)(sy[i] + jy), (int)(sx[nidx] + jx), (int)(sy[nidx] + jy), col);
+      }
+    } else {   // the moth: two lobes of dust, beating
+      float flap = 0.5f + 0.5f * fsin(t * 7.f);
+      for (int i = 0; i < 48; i++) {
+        float a = i * 0.1309f, side = (i & 1) ? 1.f : -1.f;
+        float rr = sc * (0.6f + 0.6f * fabsf(fsin(a * 2.f)));
+        V3 w = alien.p + shipB.r * (side * rr * cosf(a) * (0.4f + flap)) + shipB.u * (rr * sinf(a) * 0.7f) + shipB.f * (side * flap * 2.f);
+        float x, y, z;
+        if (project(w, x, y, z)) cv.fillRect((int)(x + jx), (int)(y + jy), 2, 2, col);
+      }
+    }
+  }
+  // its core: a hole that the eye refuses
+  float cx, cy, cz;
+  if (project(alien.p, cx, cy, cz)) cv.fillCircle((int)cx, (int)cy, (int)clampf(sc * 0.35f * FOCAL / cz, 1, 14), rgb(0, 0, 0));
+}
+
+// dim the cockpit: power is out
+static void drawPowerLoss() {
+  for (int y = 0; y < H; y += 2) cv.drawLine(0, y, W - 1, y, rgb(0, 0, 0));
+  if (((int)(tNow * 3)) & 1) { cv.setTextColor(rgb(200, 40, 30)); cv.setCursor(6, 228); cv.print("NO POWER"); }
+}
+
+// after it leaves: dark, then the glitch of systems coming back
+static bool drawAlienAftermath() {
+  float t = alien.t;
+  if (!alien.active || t < 23.15f || t >= 27.6f) return false;
+  cv.fillSprite(rgb(0, 0, 0));
+  float k = 1.f - (t - 23.15f) / 4.45f;
+  int bars = (int)(14 * k * k) + (rnd() % 3);
+  for (int i = 0; i < bars; i++) {
+    int y = (int)(rnd() % H), h = 1 + (int)(rnd() % 6), x = (int)(rnd() % W), w = 10 + (int)(rnd() % 140);
+    static const uint16_t cols[] = {rgb(150, 225, 30), rgb(93, 0, 93), rgb(0, 115, 115), rgb(200, 200, 210)};
+    cv.fillRect(x, y, w, h, shade(cols[rnd() % 4], 0.3f + 0.7f * k));
+  }
+  if (k > 0.6f) cv.drawCircle((int)alienLX, (int)alienLY, (int)(30 * k), rgb((int)(120 * k), (int)(120 * k), (int)(140 * k)));
+  return true;
+}
+
+// ============================================================
+//  session: capture, resume, new game
+// ============================================================
+static void captureSession(Session &ss) {
+  memset(&ss, 0, sizeof(ss));
+  ss.magic = SESSION_MAGIC;
+  ss.layer = (uint8_t)layer;
+  ss.station = countKind(K_STATION) > 0 ? 1 : 0;
+  ss.docked = (stationOpen || dockAnim > 0) ? 1 : 0;
+  ss.trip = sm::trip();
+  asciiCopy(ss.here, sizeof(ss.here), hereName);
+  asciiCopy(ss.origin, sizeof(ss.origin), tripOrigin);
+  ss.throttle = throttleT;
+}
+
+// Pick up where the pilot left off: same place, same lanes, same leg of the dive.
+static bool resumeSession(const Session &ss) {
+  if (ss.magic != SESSION_MAGIC || !ss.here[0] || ss.layer > 4) return false;
+  asciiCopy(tripOrigin, sizeof(tripOrigin), ss.origin);
+  if (ss.layer == 0 || !ss.trip.active) {
+    makeRealScene(ss.here, ss.station != 0);
+    if (ss.trip.active && ss.trip.layer == 0) { sm::trip() = ss.trip; spawnNextOnPath(); }
+    if (ss.docked) for (int i = 0; i < MAX_OBJ; i++) if (objs[i].kind == K_STATION) { stationIdx = i; openBoard(); break; }
+  } else {
+    // mid-dive: back in the same layer, the chain waiting ahead
+    makeRealScene(ss.here, false);       // sky, place and lanes
+    sm::trip() = ss.trip;
+    layer = ss.layer;
+    makeLayerScene();
+    spawnNextOnPath();
+  }
+  throttleT = clampf(ss.throttle, 0.f, 1.f);
+  return true;
+}
+
+static void startNewGame() {
+  sm::sdDeleteSave();
+  sm::sheetInit();
+  sm::universeReseed(millis() * 2654435761u ^ rnd() ^ (uint32_t)ESP.getEfuseMac());
+  sm::sheet().universeSeed = sm::universeSeed();
+  sm::contractsInit();
+  sm::tripEnd();
+  sm::atlasClear();
+  sm::journalClear();
+  livesSeen = sm::sheet().lives;
+  rngState = sm::universeSeed() ? sm::universeSeed() : 0xA341316Cu;
+  theater = TH_NONE; stationOpen = false; dockAnim = 0; launchAnim = 0; endingOpen = false; lostOpen = false;
+  mapOpen = false; statusOpen = false; tripOrigin[0] = 0;
+  makeRealScene(nullptr, true);
+  sm::journalAdd("New license issued. Every name ahead is unwritten.");
+  saveAll();
+  serviceSD(true);
+  setBanner("NEW PILOT. NEW SKY.", 3000);
+}
+
 static void drawEnding() {
   cv.fillRect(18, 34, 284, 160, rgb(4, 4, 10));
   cv.drawRoundRect(18, 34, 284, 160, 8, rgb(220, 190, 90));
@@ -2419,22 +3281,35 @@ static void drawEnding() {
 
 static void draw() {
   if (dockAnim > 0) { drawDockSequence(); cv.pushSprite(0, 0); return; }
+  if (drawAlienAftermath()) { cv.pushSprite(0, 0); return; }
   if (stationOpen) { cv.fillSprite(rgb(2, 4, 8)); drawStation(); cv.pushSprite(0, 0); return; }
   if (layer == 0) {
+    alienLensOn = false;
     cv.fillSprite(rgb(1, 2, 5));
     drawNebulae();
     drawStarsReal();
     drawSun();
     drawDustReal();
   } else {
+    alienLensOn = false;
+    if (alien.active && alien.t < 22.9f) {
+      float ax, ay, az;
+      lensOn = false;
+      if (project(alien.p, ax, ay, az)) {
+        alienLensOn = true; alienLX = ax; alienLY = ay;
+        alienLR = (20.f + 10.f * fsin(tNow * (alien.cls == 2 ? 9.f : 2.3f))) * (alien.t > 22.f ? 1.f + (alien.t - 22.f) * 3.f : 1.f);
+      }
+    }
     drawField(layer);
+    if (alienLensOn) { lensOn = true; lensX = alienLX; lensY = alienLY; lensR = alienLR; }
     drawStarsDeep();
     drawStreamers();
   }
   drawObjects();
   drawBoomsAndBolts();
-  drawTargeting();
-  drawHud();
+  if (alienHolds()) drawPowerLoss();            // the cockpit goes dark...
+  if (alien.active && layer > 0) { drawAlienScan(alienLX, alienLY); drawAlienShape(); }   // ...it does not
+  if (!alienHolds()) { drawTargeting(); drawHud(); }
   if (launchAnim > 0) {
     float u = launchAnim / 0.9f;
     for (int i = 0; i < 12; i++) {
@@ -2449,6 +3324,8 @@ static void draw() {
     if (k > 0.55f) cv.fillSprite(mix565(hsv(layerHue(layer), 0.3f, 1.f), rgb(255, 255, 255), (k - 0.55f) / 0.45f));
     else if (k > 0.2f) for (int i = 0; i < 6; i++) cv.drawCircle(160, 120, (int)((1 - k) * 260) + i * 9, hsv(layerHue(layer) + i * 20, 0.5f, 1.f));
   }
+  if (statusOpen) { if (statusPage) drawJournal(); else drawStatus(); }
+  if (mapOpen) { if (mapPage) drawSystemMap(); else drawMap(); }
   if (bootOpen) drawBoot();
   if (lostOpen) drawLost();
   if (endingOpen) drawEnding();
@@ -2471,17 +3348,52 @@ void setup() {
   initSin();
   initBlocks();
   hx::begin();
+  M5.BtnB.setHoldThresh(600);   // hold B for the status screen
+  M5.BtnA.setHoldThresh(600);   // hold A for the map
+  M5.BtnC.setHoldThresh(600);   // hold C on the status screen for the journal
 
   sm::sheetInit();
   sm::contractsInit();
   sm::simInit();
   bool restored = sm::sheetLoad();
-  if (restored) { sm::universeRestoreSeed(sm::sheet().universeSeed); sm::contractsLoad(); }
+  if (restored) { sm::universeRestoreSeed(sm::sheet().universeSeed); sm::contractsLoad(); sm::atlasLoad(); sm::journalLoad(); }
+  else { sm::atlasClear(); sm::journalClear(); }
+  // SD card: pilot.sav wins. A managed folder with no pilot.sav means the pilot
+  // deleted it on purpose: new game. No folder marker yet: migrate flash to card.
+  Session bootSession{};
+  bool haveSession = false;
+  if (sm::sdBegin()) {
+    if (sm::sdHasSave() && sm::sdLoadGame(&bootSession, sizeof(bootSession))) {
+      restored = true; haveSession = true;
+      sm::universeRestoreSeed(sm::sheet().universeSeed);
+    } else if (sm::sdManaged() && !sm::sdHasSave()) {
+      sm::sheetInit();
+      sm::universeReseed(millis() * 2654435761u ^ (uint32_t)ESP.getEfuseMac());
+      sm::sheet().universeSeed = sm::universeSeed();
+      sm::contractsInit(); sm::atlasClear(); sm::journalClear();
+      restored = false;
+    }
+  }
+  if (!haveSession && restored) {
+    Preferences prefs;
+    if (prefs.begin("sm_sess", true)) {
+      if (prefs.getBytesLength("s") == sizeof(bootSession)) { prefs.getBytes("s", &bootSession, sizeof(bootSession)); haveSession = true; }
+      prefs.end();
+    }
+  }
   rngState = sm::universeSeed() ? sm::universeSeed() : 0xA341316Cu;
   livesSeen = sm::sheet().lives;
   initMeshes();
-  makeRealScene(nullptr, true);
-  setBanner(restored ? "SHEET RESTORED - STILL LOST" : "LOST IN SPACE. FLY A NAMED GATE, OR DOCK AND ASK AROUND.", 3600);
+  if (haveSession && resumeSession(bootSession)) {
+    char b[112]; snprintf(b, sizeof(b), "RESUMED: %s", layer == 0 ? hereName : layerName(layer));
+    setBanner(b, 3000);
+  } else {
+    makeRealScene(nullptr, true);
+    setBanner(restored ? "SHEET RESTORED - STILL LOST" : "LOST IN SPACE. FLY A NAMED GATE, OR DOCK AND ASK AROUND.", 3600);
+    if (!restored) sm::journalAdd("New license issued. Every name ahead is unwritten.");
+  }
+  saveAll();
+  serviceSD(true);   // first boot with a card: the flash save migrates onto it
   crossFlash = 0.8f;
 }
 

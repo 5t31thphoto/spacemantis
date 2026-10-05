@@ -6,6 +6,16 @@
 #include <cmath>
 #include "M5Unified.h"
 #include "Preferences.h"
+#include "SD.h"
+#include <sys/stat.h>
+SPIClass SPI;
+SDClass SD;
+bool SDClass::begin(int, SPIClass &, int) { if (!present) return false; ::mkdir(root.c_str(), 0755); return true; }
+bool SDClass::exists(const char *p) { struct stat st; return stat((root + p).c_str(), &st) == 0; }
+bool SDClass::mkdir(const char *p) { return ::mkdir((root + p).c_str(), 0755) == 0; }
+File SDClass::open(const char *p, const char *mode) { return File(fopen((root + p).c_str(), mode)); }
+bool SDClass::remove(const char *p) { return ::remove((root + p).c_str()) == 0; }
+bool SDClass::rename(const char *a, const char *b) { return ::rename((root + a).c_str(), (root + b).c_str()) == 0; }
 
 static uint32_t g_ms = 1000;
 uint32_t millis() { return g_ms; }
