@@ -25,7 +25,7 @@ struct AtlasPlace {
   uint8_t flags;
   uint16_t lastSeen;   // visit clock, for forgetting
 };
-struct AtlasLink { uint8_t a, b, depth, flags; };
+struct AtlasLink { uint8_t a, b, depth, flags, via; };   // via: the landmark hub a lane passes (255 = none)
 
 struct Atlas {
   uint8_t version;
@@ -39,12 +39,16 @@ Atlas &atlas();
 int atlasFind(const char *name);
 // Arrive at a place. A place seen for the first time deals its own lanes:
 // mostly to places nobody has heard of, sometimes back to names already seen.
-void atlasVisit(const char *name, const char *cameFrom, uint8_t depth, bool flown);
+// viaLandmark: a hub the trip passed. Both ends then keep a gate to the hub and
+// a gate to each other that runs past it.
+void atlasVisit(const char *name, const char *cameFrom, uint8_t depth, bool flown, const char *viaLandmark = nullptr);
 // A rumor heard here opens a lane from here to somewhere new.
 void atlasRumor(const char *name, uint8_t depth, bool landmark);
 // Lanes from the current place, for the gate field. Returns count.
-struct AtlasLane { char name[NAME_LEN]; uint8_t depth; bool visited, rumor, fixed; };
+struct AtlasLane { char name[NAME_LEN]; char via[NAME_LEN]; uint8_t depth; bool visited, rumor, fixed; };
 int atlasLanesHere(AtlasLane *out, int maxOut);
+// At a landmark hub: every known place that has routed through it.
+int atlasHubLanes(const char *landmark, AtlasLane *out, int maxOut);
 // The pod launched: surface memory is gone; fixed points stay.
 void atlasWipe();
 void atlasClear();                                   // a brand-new pilot remembers nothing

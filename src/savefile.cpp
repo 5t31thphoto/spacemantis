@@ -10,13 +10,13 @@
 
 namespace sm {
 namespace {
-const char *DIR = "/spacemantis-saves";
-const char *SAVE = "/spacemantis-saves/pilot.sav";
-const char *TMP = "/spacemantis-saves/pilot.tmp";
-const char *MARK = "/spacemantis-saves/README.txt";
-const char *JTXT = "/spacemantis-saves/journal.txt";
-const uint32_t MAGIC = 0x56534D53u;   // "SMSV"
-const uint16_t VERSION = 1;
+const char *SM_SAVE_DIR = "/spacemantis-saves";
+const char *SM_SAVE_FILE = "/spacemantis-saves/pilot.sav";
+const char *SM_SAVE_TMP = "/spacemantis-saves/pilot.tmp";
+const char *SM_SAVE_MARK = "/spacemantis-saves/README.txt";
+const char *SM_JOURNAL_TXT = "/spacemantis-saves/journal.txt";
+const uint32_t SM_SAVE_MAGIC = 0x56534D53u;   // "SMSV"
+const uint16_t SM_SAVE_VERSION = 1;
 bool s_ready = false;
 
 struct Header {
@@ -45,19 +45,19 @@ bool sdBegin() {
   // Core2: the card shares the display's SPI bus; chip select is GPIO 4
   s_ready = SD.begin(GPIO_NUM_4, SPI, 25000000);
   if (!s_ready) return false;
-  if (!SD.exists(DIR)) SD.mkdir(DIR);
+  if (!SD.exists(SM_SAVE_DIR)) SD.mkdir(SM_SAVE_DIR);
   return true;
 }
 
 bool sdReady() { return s_ready; }
-bool sdHasSave() { return s_ready && SD.exists(SAVE); }
-bool sdManaged() { return s_ready && SD.exists(MARK); }
+bool sdHasSave() { return s_ready && SD.exists(SM_SAVE_FILE); }
+bool sdManaged() { return s_ready && SD.exists(SM_SAVE_MARK); }
 
 bool sdSaveGame(const void *session, uint16_t sessionLen) {
   if (!s_ready) return false;
-  Header h{MAGIC, VERSION, (uint16_t)sizeof(Pilot), (uint16_t)sizeof(Contract), (uint16_t)sizeof(Atlas),
+  Header h{SM_SAVE_MAGIC, SM_SAVE_VERSION, (uint16_t)sizeof(Pilot), (uint16_t)sizeof(Contract), (uint16_t)sizeof(Atlas),
            (uint16_t)sizeof(Journal), sessionLen, payloadSum(session, sessionLen)};
-  File f = SD.open(TMP, FILE_WRITE);
+  File f = SD.open(SM_SAVE_TMP, FILE_WRITE);
   if (!f) return false;
   size_t w = f.write((const uint8_t *)&h, sizeof(h));
   w += f.write((const uint8_t *)&sheet(), sizeof(Pilot));
@@ -67,12 +67,12 @@ bool sdSaveGame(const void *session, uint16_t sessionLen) {
   w += f.write((const uint8_t *)session, sessionLen);
   f.close();
   size_t want = sizeof(h) + sizeof(Pilot) + sizeof(Contract) + sizeof(Atlas) + sizeof(Journal) + sessionLen;
-  if (w != want) { SD.remove(TMP); return false; }
+  if (w != want) { SD.remove(SM_SAVE_TMP); return false; }
   // swap the finished file into place so a power cut never leaves half a save
-  if (SD.exists(SAVE)) SD.remove(SAVE);
-  if (!SD.rename(TMP, SAVE)) return false;
-  if (!SD.exists(MARK)) {
-    File m = SD.open(MARK, FILE_WRITE);
+  if (SD.exists(SM_SAVE_FILE)) SD.remove(SM_SAVE_FILE);
+  if (!SD.rename(SM_SAVE_TMP, SM_SAVE_FILE)) return false;
+  if (!SD.exists(SM_SAVE_MARK)) {
+    File m = SD.open(SM_SAVE_MARK, FILE_WRITE);
     if (m) {
       const char *txt = "SpaceMantis saves\r\n\r\npilot.sav   the whole game. Delete it (only it) to start a new game.\r\n"
                         "journal.txt the pilot's journal, newest first.\r\n\r\nOr hold A + C on the title screen for two seconds.\r\n";
@@ -84,11 +84,11 @@ bool sdSaveGame(const void *session, uint16_t sessionLen) {
 }
 
 bool sdLoadGame(void *session, uint16_t sessionLen) {
-  if (!s_ready || !SD.exists(SAVE)) return false;
-  File f = SD.open(SAVE, FILE_READ);
+  if (!s_ready || !SD.exists(SM_SAVE_FILE)) return false;
+  File f = SD.open(SM_SAVE_FILE, FILE_READ);
   if (!f) return false;
   Header h{};
-  bool ok = f.read((uint8_t *)&h, sizeof(h)) == sizeof(h) && h.magic == MAGIC && h.version == VERSION &&
+  bool ok = f.read((uint8_t *)&h, sizeof(h)) == sizeof(h) && h.magic == SM_SAVE_MAGIC && h.version == SM_SAVE_VERSION &&
             h.pilotLen == sizeof(Pilot) && h.contractLen == sizeof(Contract) && h.atlasLen == sizeof(Atlas) &&
             h.journalLen == sizeof(Journal) && h.sessionLen == sessionLen;
   if (!ok) { f.close(); return false; }
@@ -115,14 +115,14 @@ bool sdLoadGame(void *session, uint16_t sessionLen) {
 
 bool sdDeleteSave() {
   if (!s_ready) return false;
-  if (SD.exists(SAVE)) SD.remove(SAVE);
-  if (SD.exists(TMP)) SD.remove(TMP);
-  return !SD.exists(SAVE);
+  if (SD.exists(SM_SAVE_FILE)) SD.remove(SM_SAVE_FILE);
+  if (SD.exists(SM_SAVE_TMP)) SD.remove(SM_SAVE_TMP);
+  return !SD.exists(SM_SAVE_FILE);
 }
 
 void sdWriteJournalText() {
   if (!s_ready) return;
-  File f = SD.open(JTXT, FILE_WRITE);
+  File f = SD.open(SM_JOURNAL_TXT, FILE_WRITE);
   if (!f) return;
   const char *head = "SPACEMANTIS - PILOT JOURNAL (newest first)\r\n\r\n";
   f.write((const uint8_t *)head, strlen(head));

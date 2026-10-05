@@ -1,0 +1,45 @@
+#pragma once
+// The ESP32 Xtensa SDK (specreg.h) #defines these register names. Defining them here
+// makes the desktop build fail on the same name collisions the real toolchain does.
+#define LBEG 100
+#define LEND 101
+#define LCOUNT 102
+#define SAR 103
+#define BR 104
+#define LITBASE 105
+#define SCOMPARE1 106
+#define ACCLO 107
+#define ACCHI 108
+#define MR 109
+#define WINDOWBASE 110
+#define WINDOWSTART 111
+#define PTEVADDR 112
+#define RASID 113
+#define ITLBCFG 114
+#define DTLBCFG 115
+#define IBREAKENABLE 116
+#define MEMCTL 117
+#define ATOMCTL 118
+#define DDR 119
+#define IBREAKA 120
+#define DBREAKA 121
+#define DBREAKC 122
+#define EPC 123
+#define DEPC 124
+#define EPS 125
+#define EXCSAVE 126
+#define CPENABLE 127
+#define INTERRUPT 128
+#define INTSET 129
+#define INTCLEAR 130
+#define INTENABLE 131
+#define PS 132
+#define VECBASE 133
+#define EXCCAUSE 134
+#define DEBUGCAUSE 135
+#define CCOUNT 136
+#define PRID 137
+#define ICOUNT 138
+#define ICOUNTLEVEL 139
+#define EXCVADDR 140
+#define CCOMPARE 141

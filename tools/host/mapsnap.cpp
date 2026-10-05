@@ -18,6 +18,11 @@ int main() {
     if (k == 6) { const sm::Landmark *lm = sm::landmarkAt(1); sm::atlasFixedPoint(lm->name, lm->band); }
   }
   sm::atlasRumor("Cinder Lock", 1, false);
+  { // one trip that passes a hub
+    int g=-1; for (int i=0;i<MAX_OBJ;i++) if (objs[i].kind==K_GATE && (objs[i].gflags&GF_DEST) && !(objs[i].gflags&GF_FIXED)) g=i;
+    sm::sheet().fuel = 100; sm::sheet().hull = 100; threadGate(objs[g]); asciiCopy(sm::trip().via, sizeof(sm::trip().via), sm::landmarkAt(3)->name);
+    for (int guard=0; guard<40 && sm::trip().active; guard++) { int n=navObj; if(n<0||objs[n].kind==K_NONE){spawnNextOnPath(); n=navObj;} threadGate(objs[n]); }
+  }
   sm::contractOffer(sm::CK_HAUL); sm::contractAccept(sm::contractOfferPeek());
   mapOpen = true; mapPage = 0; snap("40_map");
   mapTrace = sm::atlasFind("Hollow Tide"); snap("41_map_trace");

@@ -1,4 +1,5 @@
 #pragma once
+#include "esp_sdk_macros.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>

@@ -38,19 +38,26 @@ int newPlace(const char *name, uint8_t depth, uint8_t flags) {
   return slot;
 }
 
-void addLink(int a, int b, uint8_t depth, uint8_t flags) {
+void addLink(int a, int b, uint8_t depth, uint8_t flags, uint8_t via = 255) {
   if (a < 0 || b < 0 || a == b) return;
   for (auto &l : s_a.link)
     if ((l.flags & AL_USED) && ((l.a == a && l.b == b) || (l.a == b && l.b == a))) {
       l.flags |= flags;
       if (flags & AL_FLOWN) l.flags &= (uint8_t)~AL_TETHER;
+      if (via != 255) { l.via = via; l.depth = depth; }   // a route past a hub runs at the hub's depth
       return;
     }
   for (auto &l : s_a.link)
-    if (!(l.flags & AL_USED)) { l = {(uint8_t)a, (uint8_t)b, depth, (uint8_t)(AL_USED | flags)}; return; }
+    if (!(l.flags & AL_USED)) { l = {(uint8_t)a, (uint8_t)b, depth, (uint8_t)(AL_USED | flags), via}; return; }
   // full: drop a tether or an unflown lane far from here
   for (auto &l : s_a.link)
-    if (!(l.flags & AL_FLOWN) && l.a != s_a.here && l.b != s_a.here) { l = {(uint8_t)a, (uint8_t)b, depth, (uint8_t)(AL_USED | flags)}; return; }
+    if (!(l.flags & AL_FLOWN) && l.a != s_a.here && l.b != s_a.here) { l = {(uint8_t)a, (uint8_t)b, depth, (uint8_t)(AL_USED | flags), via}; return; }
+}
+
+// landmark names arrive in mixed case (the table) and upper case (gate labels)
+const Landmark *findLandmark(const char *name) {
+  for (int i = 0; i < landmarkCount(); i++) { const Landmark *lm = landmarkAt(i); if (lm && sameName(lm->name, name)) return lm; }
+  return nullptr;
 }
 
 int laneCount(int a) {
@@ -75,7 +82,7 @@ bool atlasLinked(int a, int b) {
   return false;
 }
 
-void atlasVisit(const char *name, const char *cameFrom, uint8_t depth, bool flown) {
+void atlasVisit(const char *name, const char *cameFrom, uint8_t depth, bool flown, const char *viaLandmark) {
   s_a.clock++;
   int from = atlasFind(cameFrom);
   int here = newPlace(name, depth, 0);
@@ -85,7 +92,14 @@ void atlasVisit(const char *name, const char *cameFrom, uint8_t depth, bool flow
   h.flags = (uint8_t)((h.flags | AP_VISITED) & ~AP_RUMOR);
   h.lastSeen = s_a.clock;
   s_a.here = (uint8_t)here;
-  if (from >= 0 && from != here) addLink(from, here, depth, flown ? AL_FLOWN : 0);
+  const Landmark *hub = viaLandmark ? findLandmark(viaLandmark) : nullptr;
+  int L = hub ? newPlace(hub->name, hub->band, AP_FIXED) : -1;
+  if (L >= 0 && L != here) {
+    // a hub on the way: both ends keep a gate to it, and a gate to each other past it
+    uint8_t f = flown ? AL_FLOWN : 0;
+    addLink(L, here, hub->band, f);
+    if (from >= 0 && from != here && from != L) { addLink(from, L, hub->band, f); addLink(from, here, hub->band, f, (uint8_t)L); }
+  } else if (from >= 0 && from != here) addLink(from, here, depth, flown ? AL_FLOWN : 0);
   if (firstTime) {
     // unvisited systems form gates that could go about anywhere
     int want = (int)urand(3, 5);
@@ -111,7 +125,7 @@ void atlasVisit(const char *name, const char *cameFrom, uint8_t depth, bool flow
       for (int k = 0; k < n; k++) {
         const Landmark *lm = landmarkAt((start + k) % n);
         if (!lm || !landmarkDiscovered(lm->id)) continue;
-        addLink(here, newPlace(lm->name, lm->band, AP_FIXED), lm->band, 0);
+        addLink(here, newPlace(lm->name, lm->band, AP_FIXED), lm->band, 0);   // a hub, not yet routed through
         break;
       }
     }
@@ -140,7 +154,9 @@ int atlasLanesHere(AtlasLane *out, int maxOut) {
       const AtlasPlace &p = s_a.place[o];
       AtlasLane &L = out[n++];
       strncpy(L.name, p.name, NAME_LEN - 1); L.name[NAME_LEN - 1] = 0;
-      L.depth = p.depth;
+      L.via[0] = 0;
+      if (l.via != 255 && (s_a.place[l.via].flags & AP_USED)) { strncpy(L.via, s_a.place[l.via].name, NAME_LEN - 1); L.via[NAME_LEN - 1] = 0; }
+      L.depth = l.depth ? l.depth : p.depth;
       L.visited = (p.flags & AP_VISITED) != 0;
       L.rumor = (p.flags & AP_RUMOR) != 0;
       L.fixed = (p.flags & AP_FIXED) != 0 || (p.flags & AP_LANDMARK_RUMOR) != 0;
@@ -148,11 +164,29 @@ int atlasLanesHere(AtlasLane *out, int maxOut) {
   return n;
 }
 
+int atlasHubLanes(const char *landmark, AtlasLane *out, int maxOut) {
+  int L = atlasFind(landmark), n = 0;
+  if (L < 0) return 0;
+  for (auto &l : s_a.link) {
+    if (!(l.flags & AL_USED) || n >= maxOut) continue;
+    int o = l.a == L ? l.b : (l.b == L ? l.a : -1);
+    if (o < 0 || (s_a.place[o].flags & AP_FIXED) || !(s_a.place[o].flags & AP_VISITED)) continue;
+    AtlasLane &e = out[n++];
+    strncpy(e.name, s_a.place[o].name, NAME_LEN - 1); e.name[NAME_LEN - 1] = 0;
+    strncpy(e.via, s_a.place[L].name, NAME_LEN - 1); e.via[NAME_LEN - 1] = 0;
+    e.depth = l.depth; e.visited = true; e.rumor = false; e.fixed = false;
+  }
+  return n;
+}
+
 void atlasWipe() {
-  // the pod surfaces in a sky with no names; only fixed points are still fixed
+  // the pod surfaces in a sky with no names; only charted landmarks are still fixed
   for (auto &l : s_a.link) l.flags = 0;
-  for (auto &p : s_a.place) if (!(p.flags & AP_FIXED)) memset(&p, 0, sizeof(p));
-    else p.flags = (uint8_t)(AP_USED | AP_FIXED);
+  for (auto &p : s_a.place) {
+    const Landmark *lm = (p.flags & AP_FIXED) ? findLandmark(p.name) : nullptr;
+    if (lm && landmarkDiscovered(lm->id)) p.flags = (uint8_t)(AP_USED | AP_FIXED);
+    else memset(&p, 0, sizeof(p));
+  }
   s_a.here = 255;
 }
 
@@ -173,8 +207,6 @@ int atlasPath(int from, int to, int *out, int maxOut) {
   while (qh < qt) {
     int c = q[qh++];
     if (c == to) break;
-    // a fixed point is somewhere you go, not a way through: its climb out lands anywhere
-    if (c != from && (s_a.place[c].flags & AP_FIXED)) continue;
     for (auto &l : s_a.link) {
       if (!(l.flags & AL_USED)) continue;
       int o = l.a == c ? l.b : (l.b == c ? l.a : -1);

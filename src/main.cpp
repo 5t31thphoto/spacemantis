@@ -914,17 +914,19 @@ static bool isRumor(const char *name) {
   return false;
 }
 
+static const sm::Landmark *landmarkNamed(const char *name);
+
 // Named gates fan out across your view, the way a harbour lays out its lanes.
 static void placeDestGates(int want, V3 avoidDir = V3{0, 0, 0}) {
   (void)want;   // a place keeps its own lanes until a wipe (see atlas)
   sm::AtlasLane lanes[8];
   int n = sm::atlasLanesHere(lanes, 8);
   sm::Contract &c = sm::contract();
-  const char *names[8]; uint8_t depths[8], flags[8]; int m = 0;
+  const char *names[8]; const char *vias[8] = {nullptr}; uint8_t depths[8], flags[8]; int m = 0;
   if (c.live && c.dest[0]) { names[m] = c.dest; depths[m] = c.destDepth; flags[m] = GF_DEST | GF_JOB | GF_KNOWN; m++; }
   for (int i = 0; i < n && m < 6; i++) {
     if (c.live && sm::sameName(lanes[i].name, c.dest)) continue;
-    names[m] = lanes[i].name; depths[m] = lanes[i].depth;
+    names[m] = lanes[i].name; depths[m] = lanes[i].depth; vias[m] = lanes[i].via[0] ? lanes[i].via : nullptr;
     flags[m] = GF_DEST | (lanes[i].fixed ? GF_FIXED : 0) |
                (lanes[i].visited ? GF_KNOWN : (lanes[i].rumor ? GF_RUMOR : GF_UNKNOWN));
     m++;
@@ -936,7 +938,11 @@ static void placeDestGates(int want, V3 avoidDir = V3{0, 0, 0}) {
     V3 dir = norm(shipB.f * cosf(a) + shipB.r * sinf(a) + shipB.u * el);
     if (len(avoidDir) > 0.5f && dot(dir, avoidDir) > 0.97f) dir = norm(dir + shipB.u * 0.35f);   // keep clear of the dock
     V3 p = shipPos + dir * rf(105, 150);
-    spawnGate(p, norm(shipPos - p), names[k], depths[k], flags[k], 9.f);
+    Obj *g = spawnGate(p, norm(shipPos - p), names[k], depths[k], flags[k], 9.f);
+    if (g) {
+      const sm::Landmark *hub = (flags[k] & GF_FIXED) ? landmarkNamed(names[k]) : landmarkNamed(vias[k]);
+      if (hub) g->lmId = (int)hub->id;          // the landmark this gate goes to, or runs past
+    }
   }
 }
 
@@ -1012,6 +1018,12 @@ static void makeRealScene(const char *place, bool station) {
   spawnTimer = rf(4, 8);
 }
 
+static const sm::Landmark *landmarkNamed(const char *name) {
+  if (!name || !name[0]) return nullptr;
+  for (int i = 0; i < sm::landmarkCount(); i++) { const sm::Landmark *lm = sm::landmarkAt(i); if (lm && sm::sameName(lm->name, name)) return lm; }
+  return nullptr;
+}
+
 static void spawnLandmarkObj(const sm::Landmark *lm, V3 p) {
   Obj *o = newObj(K_LANDMARK);
   if (!o || !lm) return;
@@ -1049,7 +1061,11 @@ static void makeLayerScene() {
   float lmChance = layer == 1 ? 0.12f : layer == 2 ? 0.3f : layer == 3 ? 0.45f : 0.65f;
   if (rf(0, 1) < lmChance)
     if (const sm::Landmark *lm = pickLandmark(layer, layer < 4))
-      spawnLandmarkObj(lm, aheadPoint(rf(160, 230), (rf(0, 1) < 0.5f ? 1.f : -1.f) * rf(70, 120), rf(-40, 40)));
+      {
+        spawnLandmarkObj(lm, aheadPoint(rf(160, 230), (rf(0, 1) < 0.5f ? 1.f : -1.f) * rf(70, 120), rf(-40, 40)));
+        sm::Trip &tp = sm::trip();
+        if (tp.active && !tp.fixedPoint && !tp.via[0]) asciiCopy(tp.via, sizeof(tp.via), lm->name);   // you passed it
+      }
   if (layer == 4) rngState = keep ^ rnd();
   spawnTimer = rf(3, 6);
   if (layer >= 3 && countKind(K_LANDMARK) == 0 && alienCooldown <= 0.f && !alien.active && rf(0, 1) < 0.07f)
@@ -1522,7 +1538,7 @@ static void arriveReal(bool turnedBack) {
   }
   else { asciiCopy(place, sizeof(place), tr.dest); station = tr.unknown ? rf(0, 1) < 0.45f : rf(0, 1) < 0.85f; }
   upcase(place);
-  sm::atlasVisit(place, tr.fixedPoint ? tr.dest : tripOrigin, tr.destDepth, true);
+  sm::atlasVisit(place, tripOrigin, tr.destDepth, true, tr.fixedPoint ? tr.dest : (tr.via[0] ? tr.via : nullptr));
   { // a place you have been keeps its dock, or its lack of one
     int ai = sm::atlasFind(place);
     if (ai >= 0) {
@@ -1583,7 +1599,22 @@ static void crossPortal(Obj &portal) {
         if (strcmp(up, tr.dest) == 0) lm = q;
       }
       if (lm) spawnLandmarkObj(lm, aheadPoint(140.f, 0, 10.f));
-      snprintf(b, sizeof(b), "%s. THE FIXED POINT IS HERE.", tr.dest);
+      // the hub's gates: every known place that has routed through it
+      sm::AtlasLane hub[6];
+      int nh = sm::atlasHubLanes(lm ? lm->name : tr.dest, hub, 6);
+      for (int k = 0; k < nh; k++) {
+        float a = -1.0f + 2.0f * (k + 0.5f) / nh;
+        V3 p = aheadPoint(95.f, sinf(a) * 70.f, cosf(a * 2.f) * 18.f - 9.f);
+        Obj *hg = spawnGate(p, norm(shipPos - p), hub[k].name, hub[k].depth, GF_DEST | GF_KNOWN, 9.f);
+        if (hg) { hg->uses = 1; if (lm) hg->lmId = (int)lm->id; }
+      }
+      if (nh) snprintf(b, sizeof(b), "%s. %d KNOWN WAY%s RUN THROUGH HERE.", tr.dest, nh, nh == 1 ? "" : "S");
+      else snprintf(b, sizeof(b), "%s. THE FIXED POINT IS HERE.", tr.dest);
+    } else if (tr.via[0]) {
+      // passing a hub: it hangs beside the way, and the chain stays on your destination
+      const sm::Landmark *lm = landmarkNamed(tr.via);
+      if (lm && countKind(K_LANDMARK) == 0) spawnLandmarkObj(lm, aheadPoint(170.f, (rnd() & 1u) ? 55.f : -55.f, 12.f));
+      snprintf(b, sizeof(b), "PASSING %s. THE CHAIN TURNS UP.", tr.via); upcase(b);
     } else snprintf(b, sizeof(b), "%s - DEPTH REACHED. THE CHAIN TURNS UP.", layerName(layer));
     setBanner(b, 2600);
   } else {
@@ -1603,11 +1634,28 @@ static void threadGate(Obj &g) {
   }
   if (g.kind == K_PORTAL) { crossPortal(g); return; }
   hx::swell(0.45f, 0.04f, 0.14f);
+  if ((g.gflags & GF_DEST) && g.uses == 1 && sm::trip().active && layer > 0) {
+    // a hub gate at a landmark: the climb now goes to a place you know, past this hub
+    sm::Trip &tr = sm::trip();
+    const sm::Landmark *hub = landmarkNamed(tr.dest);
+    if (hub) asciiCopy(tr.via, sizeof(tr.via), hub->name);
+    asciiCopy(tr.dest, sizeof(tr.dest), g.name);
+    tr.fixedPoint = 0; tr.unknown = 0; tr.ascending = 1; tr.step = 1;
+    for (int i = 0; i < MAX_OBJ; i++) if (objs[i].kind == K_GATE && objs[i].uses == 1) killObj(i);
+    if (navObj >= 0) { killObj(navObj); navObj = -1; }
+    if (target == gi) target = -1;
+    char b[112]; snprintf(b, sizeof(b), "COURSE: %s - THROUGH %s", tr.dest, hub ? hub->name : "THE HUB");
+    setBanner(b, 2400);
+    spawnNextOnPath();
+    return;
+  }
   if (g.gflags & GF_DEST) {
     // the choice: this is where we are going
     dockTarget = -1;
     asciiCopy(tripOrigin, sizeof(tripOrigin), hereName);
     sm::tripBegin(g.name, g.depth, (g.gflags & GF_UNKNOWN) != 0, (g.gflags & GF_FIXED) != 0);
+    if (g.lmId && !(g.gflags & GF_FIXED))   // a lane that runs past a landmark hub
+      for (int i = 0; i < sm::landmarkCount(); i++) if (sm::landmarkAt(i) && (int)sm::landmarkAt(i)->id == g.lmId) asciiCopy(sm::trip().via, sizeof(sm::trip().via), sm::landmarkAt(i)->name);
     char b[112]; snprintf(b, sizeof(b), "COURSE: %s - DEPTH %u", g.name, g.depth);
     setBanner(b, 2200);
     if (target == gi) target = -1;
@@ -2147,7 +2195,8 @@ static void drawGateLike(Obj &o, float sx, float sy, float z) {
     sm::DepthAbility da = sm::depthQuery(o.depth);
     bool risky = o.depth > da.maxBand;
     char dl[28];
-    snprintf(dl, sizeof(dl), "DEPTH %u%s%s", o.depth, risky ? " !" : "", (o.gflags & GF_JOB) ? "  JOB" : (o.gflags & GF_FIXED) ? "  FIXED" : (o.gflags & GF_UNKNOWN) ? "  ?" : "");
+    bool viaHub = o.lmId && !(o.gflags & GF_FIXED);
+    snprintf(dl, sizeof(dl), "DEPTH %u%s%s", o.depth, risky ? " !" : "", (o.gflags & GF_JOB) ? "  JOB" : (o.gflags & GF_FIXED) ? "  FIXED" : viaHub ? "  VIA" : (o.gflags & GF_UNKNOWN) ? "  ?" : "");
     cv.setTextColor(risky ? rgb(255, 110, 90) : shade(col, 0.8f));
     cv.setCursor((int)sx - (int)strlen(dl) * 3, (int)(sy - r - 10)); cv.print(dl);
   } else if (r > 3 && (o.gflags & GF_LOCALNAME)) {
@@ -2726,8 +2775,8 @@ static void drawJournal() {
 //  have been sit on the rim, in network order; places only seen as gates sit
 //  just outside; fixed points sit on their own rings. No coordinates, ever.
 // ============================================================
-static const float MCX = 160.f, MCY = 116.f, MSX = 1.22f, MSY = 0.80f;
-static const float MR[5] = {96, 74, 54, 35, 16};
+static const float MAP_CX = 160.f, MAP_CY = 116.f, MAP_SX = 1.22f, MAP_SY = 0.80f;
+static const float MAP_R[5] = {96, 74, 54, 35, 16};
 static float mapX[sm::ATLAS_PLACES], mapY[sm::ATLAS_PLACES], mapAng[sm::ATLAS_PLACES];
 static uint8_t mapRole[sm::ATLAS_PLACES];   // 0 hidden, 1 rim, 2 outer, 3 fixed
 
@@ -2764,7 +2813,7 @@ static void layoutMap() {
   for (int i = 0; i < no; i++) {
     int k = order[i];
     mapAng[k] = i * 6.2831853f / (no > 0 ? no : 1);
-    mapX[k] = MCX + MR[0] * MSX * cosf(mapAng[k]); mapY[k] = MCY + MR[0] * MSY * sinf(mapAng[k]); mapRole[k] = 1;
+    mapX[k] = MAP_CX + MAP_R[0] * MAP_SX * cosf(mapAng[k]); mapY[k] = MAP_CY + MAP_R[0] * MAP_SY * sinf(mapAng[k]); mapRole[k] = 1;
   }
   // names seen as gates (and rumors) sit just outside the place they hang from
   int perAnchor[sm::ATLAS_PLACES] = {0};
@@ -2782,9 +2831,9 @@ static void layoutMap() {
     bool fixed = p.flags & sm::AP_FIXED;
     int n = perAnchor[anchor]++;
     float ang = mapAng[anchor] + off[n % 6] * (fixed ? 0.8f : 1.f);
-    float r = fixed ? MR[p.depth > 4 ? 4 : p.depth] : MR[0] + 14.f;
+    float r = fixed ? MAP_R[p.depth > 4 ? 4 : p.depth] : MAP_R[0] + 14.f;
     mapAng[k] = ang;
-    mapX[k] = MCX + r * MSX * cosf(ang); mapY[k] = MCY + r * MSY * sinf(ang);
+    mapX[k] = MAP_CX + r * MAP_SX * cosf(ang); mapY[k] = MAP_CY + r * MAP_SY * sinf(ang);
     mapRole[k] = fixed ? 3 : 2;
   }
   // fixed points with no surface thread this life still float on their rings
@@ -2793,8 +2842,8 @@ static void layoutMap() {
     const sm::AtlasPlace &p = a.place[k];
     if (!(p.flags & sm::AP_USED) || mapRole[k] || !(p.flags & sm::AP_FIXED)) continue;
     float ang = 0.7f + loose++ * 1.3f;
-    float r = MR[p.depth > 4 ? 4 : p.depth];
-    mapAng[k] = ang; mapX[k] = MCX + r * MSX * cosf(ang); mapY[k] = MCY + r * MSY * sinf(ang); mapRole[k] = 3;
+    float r = MAP_R[p.depth > 4 ? 4 : p.depth];
+    mapAng[k] = ang; mapX[k] = MAP_CX + r * MAP_SX * cosf(ang); mapY[k] = MAP_CY + r * MAP_SY * sinf(ang); mapRole[k] = 3;
   }
 }
 
@@ -2808,17 +2857,19 @@ static void mapDashed(float x0, float y0, float x1, float y1, uint16_t c, int on
 }
 
 // a lane between two rim places bows inward as deep as it goes
-static void mapArc(int a, int b, int depth, uint16_t col, int style, int width) {
+static void mapArc(int a, int b, int depth, uint16_t col, int style, int width, int via = -1) {
   float x0 = mapX[a], y0 = mapY[a], x1 = mapX[b], y1 = mapY[b];
-  bool rimPair = mapRole[a] == 1 && mapRole[b] == 1;
+  bool throughHub = via >= 0 && via < sm::ATLAS_PLACES && mapRole[via];
+  bool rimPair = (mapRole[a] == 1 && mapRole[b] == 1) || throughHub;
   float px = 0, py = 0;
   int steps = rimPair ? 16 : 1;
   float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
-  if (rimPair) {
-    float m = atan2f((cy - MCY) / MSY, (cx - MCX) / MSX);
+  if (throughHub) { cx = 2.f * mapX[via] - cx; cy = 2.f * mapY[via] - cy; }   // the curve passes the hub
+  else if (rimPair) {
+    float m = atan2f((cy - MAP_CY) / MAP_SY, (cx - MAP_CX) / MAP_SX);
     float span = fabsf(fmodf(mapAng[a] - mapAng[b] + 9.42477796f, 6.2831853f) - 3.1415927f);
-    float rr = span > 0.5f ? MR[depth > 4 ? 4 : depth] : MR[0] - 10.f * depth;
-    cx = MCX + rr * MSX * cosf(m); cy = MCY + rr * MSY * sinf(m);
+    float rr = span > 0.5f ? MAP_R[depth > 4 ? 4 : depth] : MAP_R[0] - 10.f * depth;
+    cx = MAP_CX + rr * MAP_SX * cosf(m); cy = MAP_CY + rr * MAP_SY * sinf(m);
   }
   for (int k = 0; k <= steps; k++) {
     float u = (float)k / steps;
@@ -2843,12 +2894,12 @@ static void drawMap() {
   const uint16_t LILAC = rgb(185, 160, 255), GOLD = rgb(240, 200, 90), TXT = rgb(205, 215, 220), DIM = rgb(100, 114, 124), WHITE = rgb(245, 250, 240);
   cv.fillSprite(rgb(4, 6, 12));
   for (int i = 0; i < 5; i++) {
-    cv.fillEllipse((int)MCX, (int)MCY, (int)(MR[i] * MSX), (int)(MR[i] * MSY), rgb(4 + i * 3, 8 + i * 2, 14 + i * 4));
-    cv.drawEllipse((int)MCX, (int)MCY, (int)(MR[i] * MSX), (int)(MR[i] * MSY), rgb(14 + i * 6, 26 + i * 3, 34 + i * 6));
+    cv.fillEllipse((int)MAP_CX, (int)MAP_CY, (int)(MAP_R[i] * MAP_SX), (int)(MAP_R[i] * MAP_SY), rgb(4 + i * 3, 8 + i * 2, 14 + i * 4));
+    cv.drawEllipse((int)MAP_CX, (int)MAP_CY, (int)(MAP_R[i] * MAP_SX), (int)(MAP_R[i] * MAP_SY), rgb(14 + i * 6, 26 + i * 3, 34 + i * 6));
   }
   static const char *rn[] = {"SHALLOWS", "ROADS", "BELOW", "COVE"};
   cv.setTextColor(rgb(56, 70, 80));
-  for (int i = 1; i < 5; i++) { cv.setCursor((int)MCX - (int)strlen(rn[i - 1]) * 3, (int)(MCY - MR[i] * MSY) + 2); cv.print(rn[i - 1]); }
+  for (int i = 1; i < 5; i++) { cv.setCursor((int)MAP_CX - (int)strlen(rn[i - 1]) * 3, (int)(MAP_CY - MAP_R[i] * MAP_SY) + 2); cv.print(rn[i - 1]); }
   // lanes
   for (auto &l : a.link) {
     if (!(l.flags & sm::AL_USED) || !mapRole[l.a] || !mapRole[l.b]) continue;
@@ -2856,15 +2907,16 @@ static void drawMap() {
     if (fixed) { mapDashed(mapX[l.a], mapY[l.a], mapX[l.b], mapY[l.b], rgb(120, 100, 190), 2, 3); continue; }
     if (l.flags & sm::AL_TETHER) { mapDashed(mapX[l.a], mapY[l.a], mapX[l.b], mapY[l.b], TEAL_L, 1, 3); continue; }
     bool flown = l.flags & sm::AL_FLOWN;
-    mapArc(l.a, l.b, l.depth, depthCol(l.depth), flown ? 0 : 1, flown && l.depth > 1 ? 2 : 1);
+    mapArc(l.a, l.b, l.depth, depthCol(l.depth), flown ? 0 : 1, flown && l.depth > 1 ? 2 : 1, l.via != 255 ? l.via : -1);
   }
   // the traced way from here
   int path[sm::ATLAS_PLACES], pn = 0;
   if (mapTrace >= 0 && a.here != 255) pn = sm::atlasPath(a.here, mapTrace, path, sm::ATLAS_PLACES);
   for (int i = 0; i + 1 < pn; i++) {
     int d = 1;
-    for (auto &l : a.link) if ((l.flags & sm::AL_USED) && ((l.a == path[i] && l.b == path[i + 1]) || (l.b == path[i] && l.a == path[i + 1]))) d = l.depth;
-    mapArc(path[i], path[i + 1], d, WHITE, 0, 3);
+    int via = -1;
+    for (auto &l : a.link) if ((l.flags & sm::AL_USED) && ((l.a == path[i] && l.b == path[i + 1]) || (l.b == path[i] && l.a == path[i + 1]))) { d = l.depth; via = l.via != 255 ? l.via : -1; }
+    mapArc(path[i], path[i + 1], d, WHITE, 0, 3, via);
   }
   // places and names (names placed so they don't sit on each other)
   int boxes[sm::ATLAS_PLACES][4], nb = 0;
@@ -2890,7 +2942,7 @@ static void drawMap() {
       if (mapRole[k] == 3 && strlen(lab) > 12) { char *sp2 = strchr(lab + 4, ' '); if (sp2) *sp2 = 0; }
       if (p.flags & sm::AP_RUMOR) strncat(lab, " ?", sizeof(lab) - strlen(lab) - 1);
       int w = (int)strlen(lab) * 6;
-      bool right = x >= (int)MCX;
+      bool right = x >= (int)MAP_CX;
       int cand[4][2] = {{right ? x + 7 : x - 7 - w, y - 4}, {right ? x - 7 - w : x + 7, y - 4}, {x - w / 2, y - 13}, {x - w / 2, y + 6}};
       for (int ci = 0; ci < 4; ci++) {
         int lx = cand[ci][0], ly = cand[ci][1];
@@ -2990,7 +3042,10 @@ static void drawSystemMap() {
       if (o.kind != K_GATE || !(o.gflags & GF_DEST)) continue;
       const char *tag = (o.gflags & GF_JOB) ? "JOB" : (o.gflags & GF_FIXED) ? "FIXED" : (o.gflags & GF_RUMOR) ? "RUMOR" : (o.gflags & GF_KNOWN) ? "BEEN" : "NEW";
       snprintf(l, sizeof(l), "%-14.14s d%u %-5s", o.name, o.depth, tag);
-      sysRow(y, gateColor(o), l, gateMaker(o.name), gateColor(o));
+      char viaName[24] = "";
+      if (o.lmId && !(o.gflags & GF_FIXED))
+        for (int i = 0; i < sm::landmarkCount(); i++) if (sm::landmarkAt(i) && (int)sm::landmarkAt(i)->id == o.lmId) { snprintf(viaName, sizeof(viaName), "via %.14s", sm::landmarkAt(i)->name); }
+      sysRow(y, gateColor(o), l, viaName[0] ? viaName : gateMaker(o.name), gateColor(o));
     }
   } else {
     static const char *lore[5][2] = {
