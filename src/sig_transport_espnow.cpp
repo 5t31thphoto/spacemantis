@@ -2,9 +2,16 @@
 // from the radio callback and drained by net::poll() on the main loop.
 #if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 #include "sig_transport.h"
-#include <WiFi.h>
+// The radio driver only: no Arduino WiFi.h, no TCP/IP stack. ESP-NOW needs the
+// Wi-Fi driver itself (it is part of it), nothing more.
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <esp_event.h>
+#if __has_include(<esp_mac.h>)
+#include <esp_mac.h>
+#else
+#include <esp_system.h>   // esp_read_mac lives here on ESP-IDF 4.4 (espressif32 6.x)
+#endif
 #include <string.h>
 
 namespace net {
@@ -29,22 +36,31 @@ bool ensurePeer(const uint8_t *mac) {
 }
 }  // namespace
 
+bool s_driver = false;
+
 bool tpBegin(uint8_t selfMac[6]) {
-  if (s_up) { WiFi.macAddress(selfMac); return true; }
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
+  esp_read_mac(selfMac, ESP_MAC_WIFI_STA);
+  if (s_up) return true;
+  if (!s_driver) {
+    esp_event_loop_create_default();   // fine if it already exists
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    if (esp_wifi_init(&cfg) != ESP_OK) return false;
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);   // never touch flash for radio settings
+    s_driver = true;
+  }
+  esp_wifi_set_mode(WIFI_MODE_STA);
+  if (esp_wifi_start() != ESP_OK) return false;
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-  if (esp_now_init() != ESP_OK) return false;
+  if (esp_now_init() != ESP_OK) { esp_wifi_stop(); return false; }
   esp_now_register_recv_cb(onRecv);
   ensurePeer(BCAST);
-  WiFi.macAddress(selfMac);
   s_head = s_tail = 0; s_up = true;
   return true;
 }
 void tpEnd() {
   if (!s_up) return;
   esp_now_deinit();
-  WiFi.mode(WIFI_OFF);
+  esp_wifi_stop();   // radio off; the driver stays initialised for the next session
   s_up = false;
 }
 bool tpSend(const uint8_t *dst, const uint8_t *data, int len) {

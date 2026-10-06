@@ -223,9 +223,13 @@ static void buildHull(Mesh &m, const V3 *pts0, int n, bool jitter = false) {
 
 enum MeshId : uint8_t { M_STATION = 0, M_COBRA, M_VIPER, M_SIDEWINDER, M_SHUTTLE, M_KRAIT, M_POD, M_TETRA, M_GHOST,
                         M_HEXCORE, M_RINGSEG, M_OCT, M_OCTWIDE, M_MODULE, M_PANEL, M_DOME, M_BASE, M_ROCK0, M_COUNT = M_ROCK0 + 6 };
-static Mesh meshes[M_COUNT];
+// Big working buffers live in PSRAM (internal DRAM is small and the radio needs some);
+// falls back to ordinary heap if PSRAM is ever absent.
+static void *bigAlloc(size_t n) { void *p = ps_calloc(1, n); return p ? p : calloc(1, n); }
+static Mesh *meshes = nullptr;
 
 static void initMeshes() {
+  if (!meshes) meshes = (Mesh *)bigAlloc(sizeof(Mesh) * M_COUNT);
   V3 st[12]; int k = 0;   // cuboctahedron — a nod to the Coriolis
   for (int a = -1; a <= 1; a += 2) for (int b = -1; b <= 1; b += 2) { st[k++] = {(float)a, (float)b, 0}; st[k++] = {(float)a, 0, (float)b}; st[k++] = {0, (float)a, (float)b}; }
   buildHull(meshes[M_STATION], st, 12);
@@ -409,11 +413,16 @@ static Streamer streamers[NSTREAM];
 // per-block polar coordinates for kaleidoscope fields (screen is fixed)
 static constexpr int BLK = 4, BW = W / BLK, BH = H / BLK;
 // packed 16-bit so the tables stay small in DRAM
-static int16_t blkAngQ[BW * BH], blkRadQ[BW * BH], blkLogQ[BW * BH];
+static int16_t *blkAngQ = nullptr, *blkRadQ = nullptr, *blkLogQ = nullptr;   // in PSRAM (see bigAlloc)
 static inline float blkAng(int i) { return blkAngQ[i] * (3.1415927f / 10000.f); }
 static inline float blkRad(int i) { return blkRadQ[i] * (1.f / 20000.f); }
 static inline float blkLog(int i) { return blkLogQ[i] * (1.f / 8000.f); }
 static void initBlocks() {
+  if (!blkAngQ) {
+    blkAngQ = (int16_t *)bigAlloc(sizeof(int16_t) * BW * BH);
+    blkRadQ = (int16_t *)bigAlloc(sizeof(int16_t) * BW * BH);
+    blkLogQ = (int16_t *)bigAlloc(sizeof(int16_t) * BW * BH);
+  }
   for (int by = 0; by < BH; by++)
     for (int bx = 0; bx < BW; bx++) {
       float x = (bx * BLK + 2 - 160.f) / 160.f, y = (by * BLK + 2 - 120.f) / 160.f;
@@ -4867,9 +4876,8 @@ static bool drawAlienAftermath() {
 // ============================================================
 static bool signalsOn() { return sm::flagGet("signals") > 0; }
 static const char *myCallsign() {
-  static char cs[16];
-  uint64_t mac = ESP.getEfuseMac();
-  snprintf(cs, sizeof(cs), "MANTIS-%04X", (unsigned)((mac >> 32) ^ (mac & 0xFFFF)) & 0xFFFF);
+  static char cs[16];   // the same callsign the license shows
+  snprintf(cs, sizeof(cs), "MANTIS-%04X", (unsigned)((ESP.getEfuseMac() >> 24) & 0xFFFF));
   return cs;
 }
 static int signalsFee() { const Obj *st = dockedStation(); return st && st->uses == BR_LIMINAR ? 140 : 180; }   // Liminar builds gates: cheapest

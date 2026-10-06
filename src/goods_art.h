@@ -2,7 +2,7 @@
 #include <stdint.h>
 // Market goods, cut from the commodity manifest sheet: 14x14 RGB565, 0 = transparent.
 // Order matches sm::Good: rations, water, ore, alloys, machine parts, medicine, electronics, spice.
-static const uint16_t GOOD_ICONS[8][14 * 14] PROGMEM = {
+static const uint16_t GOOD_ICONS[8][14 * 14] = {
   {  // rations
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x7C0E, 0x846F, 0x52C9, 0x0000, 0x0000, 0x0000, 0x0000,
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x8C70, 0xCDD5, 0xC553, 0xBDD4, 0xAD93, 0x842E, 0x0000, 0x0000, 0x0000,
