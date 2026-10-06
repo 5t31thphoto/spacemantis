@@ -27,6 +27,8 @@ void wipeKnowledge() {
 
 void defaults() {
   memset(&s_p, 0, sizeof(s_p));
+  s_p.activeShip = SHIP_MANTIS;
+  s_p.ships[SHIP_MANTIS].owned = 1; s_p.ships[SHIP_MANTIS].backup = 1;   // the license ship
   s_p.lives = 0;
   s_p.credits = 500;
   s_p.fuelCap = 100;
@@ -56,8 +58,20 @@ void sheetInit() {
 
 Pilot &sheet() { return s_p; }
 
+// A purchased ship is lost with the pilot; the pod wakes in the Mantis, whose fit survives.
+// If the teleporter has a record of the lost ship, any hangar can rebuild it for a fee.
+static uint8_t s_lostShip = 255;
+uint8_t takeLostShip() { uint8_t t = s_lostShip; s_lostShip = 255; return t; }
 void onDestroy() {
   s_p.lives++;
+  if (s_p.activeShip != SHIP_MANTIS && s_p.activeShip < SHIP_COUNT) {
+    s_lostShip = s_p.activeShip;
+    ShipRecord &lost = s_p.ships[s_p.activeShip];
+    if (lost.backup) lost.lost = 1; else { lost.owned = 0; lost.lost = 0; }
+    memcpy(s_p.cap, s_p.ships[SHIP_MANTIS].cap, sizeof(s_p.cap));
+    s_p.activeShip = SHIP_MANTIS;
+    deriveFit();
+  }
   // keep: ranks, xp, caps, credits (soft), persist flags, haul optional strip
   // wipe: knowledge, heat (fresh cosmos), hull refill
   wipeKnowledge();
@@ -154,7 +168,7 @@ uint8_t rankOf(CareerId id) {
 // Hold: 20 base, +14 per trailer mark, +3 per four Hauler ranks.
 // Fuel tank: 100, +8 per five Trader ranks, +6 per fuel system mark.
 void deriveFit() {
-  s_p.holdCap = (uint16_t)(20 + 14 * s_p.cap[CAP_TRAILER] + 3 * (s_p.rank[CR_HAULER] / 4));
+  s_p.holdCap = (uint16_t)(shipSpec(s_p.activeShip).holdBase + 14 * s_p.cap[CAP_TRAILER] + 3 * (s_p.rank[CR_HAULER] / 4));
   s_p.fuelCap = (uint16_t)(100 + 8 * (s_p.rank[CR_TRADER] / 5) + 6 * s_p.cap[CAP_FUELSYS]);
   if (s_p.fuel > s_p.fuelCap) s_p.fuel = s_p.fuelCap;
 }
@@ -258,6 +272,24 @@ uint16_t haulRemove(const char *what) {
   return 0;
 }
 
+uint16_t haulTake(const char *what, uint16_t n) {
+  if (!what || !n) return 0;
+  for (uint8_t i = 0; i < s_p.haulN; i++) {
+    if (strncmp(s_p.haul[i].what, what, NAME_LEN) != 0) continue;
+    uint16_t take = n < s_p.haul[i].amount ? n : s_p.haul[i].amount;
+    if (take >= s_p.haul[i].amount) return haulRemove(what);
+    s_p.haul[i].amount = (uint16_t)(s_p.haul[i].amount - take);
+    s_p.holdUsed = (uint16_t)(s_p.holdUsed > take ? s_p.holdUsed - take : 0);
+    return take;
+  }
+  return 0;
+}
+
+uint16_t haulCount(const char *what) {
+  for (uint8_t i = 0; i < s_p.haulN; i++) if (strncmp(s_p.haul[i].what, what, NAME_LEN) == 0) return s_p.haul[i].amount;
+  return 0;
+}
+
 uint16_t haulUsed() { return s_p.holdUsed; }
 
 void flagSet(const char *key, int8_t value, bool persist) {
@@ -345,6 +377,55 @@ bool sheetLoad() {
   }
   prefs.end();
   return ok;
+}
+
+}  // namespace sm
+
+namespace sm {
+
+int32_t shipRecoverFee(uint8_t t) { int32_t f = shipSpec(t).price / 5; return f < 400 ? 400 : f; }
+
+// Swap ships in a hangar: the one you leave is teleported into storage, the one you
+// take is teleported out. The teleporter keeps a record of both, as fitted now.
+bool shipSwap(uint8_t t) {
+  if (t >= SHIP_COUNT || t == s_p.activeShip) return false;
+  ShipRecord &to = s_p.ships[t];
+  if (!to.owned || to.lost) return false;
+  ShipRecord &from = s_p.ships[s_p.activeShip];
+  memcpy(from.cap, s_p.cap, sizeof(s_p.cap));
+  memcpy(from.backupCap, s_p.cap, sizeof(s_p.cap)); from.backup = 1;
+  memcpy(s_p.cap, to.cap, sizeof(s_p.cap));
+  memcpy(to.backupCap, to.cap, sizeof(to.cap)); to.backup = 1;
+  s_p.activeShip = t;
+  deriveFit();
+  s_p.hull = s_p.hullMax;
+  return true;
+}
+
+bool shipBuy(uint8_t t) {
+  if (t >= SHIP_COUNT || s_p.ships[t].owned) return false;
+  if (!spendCredits(shipSpec(t).price)) return false;
+  ShipRecord &r = s_p.ships[t];
+  memset(&r, 0, sizeof(r));
+  r.owned = 1;
+  r.cap[CAP_WEAPONS] = 1; r.cap[CAP_SHIELDS] = 1; r.cap[CAP_BULKHEADS] = 1;   // a new hull comes with the basics
+  return true;
+}
+
+bool shipRecover(uint8_t t) {
+  if (t >= SHIP_COUNT || !s_p.ships[t].lost) return false;
+  if (!spendCredits(shipRecoverFee(t))) return false;
+  ShipRecord &r = s_p.ships[t];
+  memcpy(r.cap, r.backupCap, sizeof(r.cap));
+  r.lost = 0;
+  return true;
+}
+
+void shipGrant(uint8_t t) {   // unlocked, not bought
+  if (t >= SHIP_COUNT || s_p.ships[t].owned) return;
+  ShipRecord &r = s_p.ships[t];
+  memset(&r, 0, sizeof(r));
+  r.owned = 1; r.cap[CAP_WEAPONS] = 2; r.cap[CAP_SHIELDS] = 2; r.cap[CAP_BULKHEADS] = 3; r.cap[CAP_CLOAK] = 1;
 }
 
 }  // namespace sm

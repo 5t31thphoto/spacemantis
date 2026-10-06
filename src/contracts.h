@@ -37,6 +37,7 @@ struct Contract {
   uint8_t progress;        // 0..need
   uint8_t need;
   uint8_t live;            // 1 active
+  uint8_t issuer;          // who posted it (brand: 3 = Deseret)
 };
 
 void contractsInit();
@@ -44,7 +45,8 @@ void contractSetHere(const char *place);   // current location: jobs never point
 // The gates in this system: a delivery job picks one of these, never a new one.
 void contractSetLanes(const char *const *names, const uint8_t *depths, const uint8_t *visited, int n);
 bool contractDueHere(const char *place);      // a delivery is payable at this place's dock
-void contractSetBand(uint8_t band);           // where the pilot is: deep jobs only count below
+void contractSetBand(uint8_t band);
+void contractSetIssuer(uint8_t brand);        // the dock posting work (Deseret work builds standing)           // where the pilot is: deep jobs only count below
 bool contractOfferDeep();                     // the board at a deep outpost
 bool contractDeliverHere(const char *place);  // pay it (at the dock)
 Contract &contract();

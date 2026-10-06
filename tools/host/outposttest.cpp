@@ -6,10 +6,10 @@ static void check(bool ok, const char *w) { printf("%s %s\n", ok ? "ok  " : "FAI
 int main() {
   setup(); bootOpen = false;
   sm::haulClear(); sm::haulAdd("ore", 4, true); sm::haulAdd("anomaly scan", 2, true);
-  layer = 0; int surface = sellableValue(false);
-  layer = 1; int deep = sellableValue(false);
+  layer = 0; setDockEcon(); int surface = sellableValue(false);
+  layer = 1; setDockEcon(); int deep = sellableValue(false);
   check(deep > surface * 2, "a deep outpost pays far more for ore and buys deep scans");
-  sm::haulClear(); sm::haulAdd("anomaly scan", 2, true); layer = 0;
+  sm::haulClear(); sm::haulAdd("anomaly scan", 2, true); layer = 0; setDockEcon();
   check(sellableValue(false) == 0, "nobody on the surface buys deep scans");
   // the deep board posts deep work
   sm::Trip &tr = sm::trip(); tr.active = 1; tr.destDepth = 2; strcpy(tr.dest, "X"); layer = 1; makeLayerScene();

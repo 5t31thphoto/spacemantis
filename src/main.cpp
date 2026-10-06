@@ -29,6 +29,10 @@
 #include <Preferences.h>
 #include "ship_art.h"
 #include "logos_art.h"
+#include "equipment_art.h"
+#include "market.h"
+#include "ships_art.h"
+#include "goods_art.h"
 #include "trip.h"
 #include "sheet.h"
 #include "universe.h"
@@ -217,7 +221,7 @@ static void buildHull(Mesh &m, const V3 *pts0, int n, bool jitter = false) {
 }
 
 enum MeshId : uint8_t { M_STATION = 0, M_COBRA, M_VIPER, M_SIDEWINDER, M_SHUTTLE, M_KRAIT, M_POD, M_TETRA, M_GHOST,
-                        M_HEXCORE, M_RINGSEG, M_OCT, M_OCTWIDE, M_MODULE, M_PANEL, M_ROCK0, M_COUNT = M_ROCK0 + 6 };
+                        M_HEXCORE, M_RINGSEG, M_OCT, M_OCTWIDE, M_MODULE, M_PANEL, M_DOME, M_BASE, M_ROCK0, M_COUNT = M_ROCK0 + 6 };
 static Mesh meshes[M_COUNT];
 
 static void initMeshes() {
@@ -267,6 +271,21 @@ static void initMeshes() {
   { const V3 b[] = {{-0.3f, -0.22f, -0.42f}, {0.3f, -0.22f, -0.42f}, {-0.3f, 0.22f, -0.42f}, {0.3f, 0.22f, -0.42f},
                     {-0.3f, -0.22f, 0.42f}, {0.3f, -0.22f, 0.42f}, {-0.24f, 0.26f, 0.36f}, {0.24f, 0.26f, 0.36f}};
     buildHull(meshes[M_MODULE], b, 8, true); }
+  {   // Deseret dome: a faceted hemisphere, axis up
+    V3 p[13];
+    for (int i = 0; i < 6; i++) {
+      float a = i * 1.0471976f, b = a + 0.5235988f;
+      p[i] = {cosf(a), 0.f, sinf(a)};
+      p[i + 6] = {0.72f * cosf(b), 0.55f, 0.72f * sinf(b)};
+    }
+    p[12] = {0.f, 0.92f, 0.f};
+    buildHull(meshes[M_DOME], p, 13, true);
+  }
+  {   // the habitat's base: a broad flat octagon
+    V3 p[16];
+    for (int i = 0; i < 8; i++) { float a = i * 0.7853982f + 0.3926991f; p[i] = {1.25f * cosf(a), 0.1f, 1.25f * sinf(a)}; p[i + 8] = {1.1f * cosf(a), -0.18f, 1.1f * sinf(a)}; }
+    buildHull(meshes[M_BASE], p, 16, true);
+  }
   { const V3 b[] = {{-0.6f, -0.02f, -0.22f}, {0.6f, -0.02f, -0.22f}, {-0.6f, 0.02f, -0.22f}, {0.6f, 0.02f, -0.22f},
                     {-0.6f, -0.02f, 0.22f}, {0.6f, -0.02f, 0.22f}, {-0.6f, 0.02f, 0.22f}, {0.6f, 0.02f, 0.22f}};
     buildHull(meshes[M_PANEL], b, 8, true); }
@@ -314,7 +333,14 @@ static Obj *newObj(uint8_t kind) {
 }
 static int idxOf(const Obj *o) { return o ? (int)(o - objs) : -1; }
 static void killObj(int i) { if (i >= 0 && i < MAX_OBJ) objs[i].kind = K_NONE; }
-static void clearWorld() { for (auto &o : objs) o.kind = K_NONE; }
+static inline uint8_t flyingType() { return sm::sheet().activeShip; }
+static inline bool flyingFalcor() { return flyingType() == sm::SHIP_FALCOR; }
+static inline bool flyingHoney() { return flyingType() == sm::SHIP_HONEYBEE; }
+static inline bool flyingMaltese() { return flyingType() == sm::SHIP_MALTESE; }
+static inline bool flyingGhost() { return flyingType() == sm::SHIP_GHOST; }
+static int autoNavObj = -1, orbitObj = -1;   // Maltese: gate autonav, gas giant orbit
+static bool autoNav = false;
+static void clearWorld() { for (auto &o : objs) o.kind = K_NONE; autoNavObj = -1; orbitObj = -1; }
 static int countKind(uint8_t k) { int n = 0; for (auto &o : objs) if (o.kind == k) n++; return n; }
 static float distTo(const Obj &o) { return len(o.p - shipPos); }
 static float surfaceDist(const Obj &o) { return distTo(o) - o.radius; }
@@ -487,7 +513,13 @@ static void drawField(int l, float cx = 160, float cy = 120, float rClip = 1e9f)
         }
       }
       V3 d = shipB.f + shipB.r * u + shipB.u * v;
-      cv.fillRect(x + shift, y, BLK, BLK, fieldColor(l, bi, d, t));
+      uint16_t fc = fieldColor(l, bi, flyingGhost() && !clip ? d : d, flyingGhost() && !clip ? t * 0.45f : t);
+      if (flyingGhost() && !clip) {   // the flagship's own refined, quieter version of the deep
+        int r, g, b; unrgb(fc, r, g, b);
+        int m = (r + g + b) / 3;
+        fc = rgb((m * 5 + r * 4) / 9 * 85 / 100, (m * 5 + g * 4) / 9 * 92 / 100, ((m * 5 + b * 4) / 9 * 108 / 100) > 255 ? 255 : (m * 5 + b * 4) / 9 * 108 / 100);
+      }
+      cv.fillRect(x + shift, y, BLK, BLK, fc);
     }
   }
 }
@@ -882,7 +914,7 @@ static bool drawMesh(const Obj &ob, const Mesh &m, float scale, uint16_t base, u
 // ============================================================
 //  stations: built from parts, dressed in the colours of whoever built them
 // ============================================================
-enum StationStyle : uint8_t { SS_HEXCORE = 0, SS_RING, SS_SPINDLE, SS_OUTPOST, SS_CORIOLIS };
+enum StationStyle : uint8_t { SS_HEXCORE = 0, SS_RING, SS_SPINDLE, SS_OUTPOST, SS_CORIOLIS, SS_HABITAT };
 enum Brand : uint8_t { BR_LIMINAR = 0, BR_PORTEX, BR_MALTAPLEX, BR_DESERET, BR_FREEHOLD };
 struct BrandLook { const char *name; uint16_t base, accent, light; };
 static const BrandLook &brandLook(uint8_t b) {
@@ -921,6 +953,12 @@ static int stationParts(uint8_t style, StationPart *out) {
       add(M_PANEL, V3{0, 0.95f, -0.85f}, 0, 1.5707963f, 0.8f, false);
       add(M_PANEL, V3{0, -0.95f, -0.85f}, 0, 1.5707963f, 0.8f, false);
       break;
+    case SS_HABITAT:   // Deseret: a colony of domes on a base, a tunnel to the dock
+      add(M_BASE, V3{0, -0.2f, 0}, 0, 0, 1.f, true);
+      add(M_DOME, V3{0, -0.12f, 0}, 0, 0, 0.82f, false);
+      for (int i = 0; i < 3; i++) { float a = i * 2.0943951f + 0.5f; add(M_DOME, V3{cosf(a) * 0.82f, -0.12f, sinf(a) * 0.82f * 0.6f - 0.25f}, 0, 0, 0.36f, false); }
+      add(M_MODULE, V3{0, -0.1f, 0.95f}, 0, 0, 0.42f, true);
+      break;
     case SS_OUTPOST:
       add(M_MODULE, V3{0, 0, 0}, 0, 0, 1.f, false);
       add(M_MODULE, V3{0, -0.42f, -0.55f}, 1.5707963f, 0, 0.75f, true);
@@ -936,7 +974,7 @@ static int stationParts(uint8_t style, StationPart *out) {
 
 // where the dock gate sits in front of a station, in units of its radius
 static float stationDockFront(uint8_t style) {
-  switch (style) { case SS_RING: return 0.f; case SS_SPINDLE: return 1.35f; case SS_OUTPOST: return 1.9f; case SS_HEXCORE: return 1.75f; default: return 1.73f; }
+  switch (style) { case SS_RING: return 0.f; case SS_SPINDLE: return 1.35f; case SS_OUTPOST: return 1.9f; case SS_HEXCORE: return 1.75f; case SS_HABITAT: return 1.75f; default: return 1.73f; }
 }
 
 // each class wears a two-tone hull and a lit canopy, like ours, in its own colours
@@ -946,6 +984,7 @@ static uint16_t shipLivery(const Obj &o) {
   meshAccent = meshCanopy = 0;
   if (!liveryOn) return 0;
   if (o.ghost) { meshAccent = rgb(26, 30, 36); meshCanopy = rgb(190, 235, 225); return rgb(92, 100, 110); }
+  if (o.uses == 1 + BR_DESERET) { meshAccent = rgb(122, 138, 78); meshCanopy = rgb(200, 220, 150); return rgb(222, 214, 190); }
   switch (o.enc) {
     case sm::ENC_TRAVELER:  meshAccent = rgb(0, 115, 115);  meshCanopy = rgb(150, 225, 30);  return rgb(214, 204, 178);
     case sm::ENC_MERCHANT:  meshAccent = rgb(214, 132, 38); meshCanopy = rgb(255, 214, 120); return rgb(226, 218, 196);
@@ -987,7 +1026,7 @@ static void drawStationObj(const Obj &st) {
     meshAccent = (pp.accent || style == SS_RING) ? 0 : bl.accent;
     meshAmbient = 0.45f;
     meshDetail = pp.mesh == M_PANEL ? 1 : 2; meshWindow = bl.light;
-    bool core = pp.mesh == M_HEXCORE || (style == SS_SPINDLE && pp.mesh == M_OCTWIDE && i == 2) || (style == SS_OUTPOST && i == 0) || (style == SS_RING && pp.accent && pp.mesh == M_RINGSEG);
+    bool core = (pp.mesh == M_DOME && i == 1) || pp.mesh == M_HEXCORE || (style == SS_SPINDLE && pp.mesh == M_OCTWIDE && i == 2) || (style == SS_OUTPOST && i == 0) || (style == SS_RING && pp.accent && pp.mesh == M_RINGSEG);
     meshEmblem = core ? (uint8_t)(st.uses + 1) : 0;
     if (core) { emblemArea = 0.f; decalSize = 0.f; }
     uint16_t base = pp.accent ? bl.accent : (pp.mesh == M_PANEL ? rgb(40, 52, 84) : bl.base);
@@ -1372,10 +1411,11 @@ static uint8_t stationLookFor(const char *place) {
   bool far = ai >= 0 && sm::atlas().place[ai].depth >= 2;
   uint32_t r = placeHash(place) % 100;
   uint8_t look;
-  if (r < (uint32_t)(far ? 38 : 10)) look = makeLook(SS_OUTPOST, BR_FREEHOLD);
+  if (r < (uint32_t)(far ? 38 : 10)) look = makeLook(SS_OUTPOST, ((placeHash(place) >> 11) % 5) < 2 ? BR_DESERET : BR_FREEHOLD);
   else {
     uint32_t q = (r * 7u) % 100;
-    look = q < 36 ? makeLook(SS_HEXCORE, BR_LIMINAR) : q < 70 ? makeLook(SS_RING, BR_MALTAPLEX) : makeLook(SS_SPINDLE, BR_PORTEX);
+    look = q < 28 ? makeLook(SS_HEXCORE, BR_LIMINAR) : q < 52 ? makeLook(SS_RING, BR_MALTAPLEX)
+         : q < 74 ? makeLook(SS_SPINDLE, BR_PORTEX) : makeLook(SS_HABITAT, BR_DESERET);
   }
   if (ai >= 0) sm::atlas().place[ai].look = look;
   return look;
@@ -1386,12 +1426,12 @@ static void placeStation(V3 p, V3 facing, uint8_t look = 0) {
   if (!st) return;
   if (!look) look = stationLookFor(hereName);
   uint8_t style = look & 7, brand = (look >> 3) & 7;
-  static const float radius[] = {24.f, 32.f, 26.f, 11.f, 22.f};
-  st->p = p; st->o = Basis::facing(facing, V3{0, 1, 0}); st->radius = radius[style < 5 ? style : 0]; st->mesh = M_STATION;
-  st->spin = style == SS_OUTPOST ? 0.1f : 0.22f; st->col = rgb(150, 160, 175); st->enc = sm::ENC_STATION;
+  static const float radius[] = {24.f, 32.f, 26.f, 11.f, 22.f, 26.f};
+  st->p = p; st->o = Basis::facing(facing, V3{0, 1, 0}); st->radius = radius[style < 6 ? style : 0]; st->mesh = M_STATION;
+  st->spin = style == SS_OUTPOST ? 0.1f : style == SS_HABITAT ? 0.08f : 0.22f; st->col = rgb(150, 160, 175); st->enc = sm::ENC_STATION;
   st->bodyType = style; st->uses = brand;
-  static const char *kindName[] = {"HEXCORE", "RING", "SPINDLE", "OUTPOST", "STATION"};
-  snprintf(st->name, sizeof(st->name), "%s %s", brandLook(brand).name, kindName[style < 5 ? style : 4]);
+  static const char *kindName[] = {"HEXCORE", "RING", "SPINDLE", "OUTPOST", "STATION", "HABITAT"};
+  snprintf(st->name, sizeof(st->name), "%s %s", brandLook(brand).name, kindName[style < 6 ? style : 4]);
   Obj *dg = newObj(K_DOCKGATE);
   if (!dg) { st->kind = K_NONE; return; }
   dg->p = p + st->o.f * (stationDockFront(style) * st->radius); dg->o = st->o;
@@ -1522,6 +1562,14 @@ static void makeRealScene(const char *place, bool station) {
     stationDir = norm(shipB.f + shipB.r * rf(-0.3f, 0.3f) + shipB.u * rf(-0.15f, 0.15f));
     V3 sp = shipPos + stationDir * 190.f;
     placeStation(sp, norm(shipPos - sp + shipB.r * 40.f));
+    // Deseret keeps a facility beside many of the other companies' stations
+    uint8_t mainLook = stationLookFor(hereName);
+    if (((mainLook >> 3) & 7) != BR_DESERET && (placeHash(hereName) >> 17) % 100 < 35) {
+      // behind its neighbour, past where the gates fan out, so its dock never sits in a lane's approach
+      V3 fp = sp + stationDir * 110.f + norm(cross(stationDir, shipB.u)) * 70.f + shipB.u * 20.f;
+      placeStation(fp, norm(shipPos - fp), makeLook(SS_OUTPOST, BR_DESERET));
+      for (int i = MAX_OBJ - 1; i >= 0; i--) if (objs[i].kind == K_STATION && objs[i].uses == BR_DESERET && objs[i].bodyType == SS_OUTPOST) { snprintf(objs[i].name, sizeof(objs[i].name), "DESERET FACILITY"); break; }
+    }
   }
   placeDestGates(ri(3, 5), stationDir);
   if (rf(0, 1) < 0.45f) {
@@ -1605,6 +1653,10 @@ static void spawnContact() {
     int pick = (int)(rnd() % (uint32_t)sum), acc = 0;
     for (int i = 0; i < sm::ENC_COUNT; i++) { acc += w[i]; if (pick < acc) { kind = i; break; } }
   }
+  if (flyingMaltese() && layer == 0 && !ghost) {   // a luxury hull draws eyes, more so with a full trailer
+    const sm::Pilot &pp = sm::sheet();
+    if (rf(0, 1) < 0.12f + (pp.holdUsed * 2 > pp.holdCap ? 0.1f : 0.f)) kind = sm::ENC_PIRATE;
+  }
   V3 dir = norm(shipB.f * rf(0.4f, 1.f) + shipB.r * rf(-1, 1) + shipB.u * rf(-0.5f, 0.5f));
   V3 p = shipPos + dir * rf(230, 320);
   if (kind == sm::ENC_STATION) {
@@ -1642,6 +1694,9 @@ static void spawnContact() {
     snprintf(o->name, sizeof(o->name), "GHOST FLEET");
   }
   if (o->kind == K_SHIP) o->o = Basis::facing(norm(o->v), V3{0, 1, 0});
+  if (o->kind == K_SHIP && layer == 0 && (kind == sm::ENC_MERCHANT || kind == sm::ENC_TRAVELER) && rf(0, 1) < 0.3f) {
+    o->uses = 1 + BR_DESERET; snprintf(o->name, sizeof(o->name), "DESERET %s", kind == sm::ENC_MERCHANT ? "FREIGHTER" : "SETTLER");
+  }
   if (o->enc == sm::ENC_SECURITY && !ghost && sm::sheet().heat[sm::HEAT_SECURITY] > 50) o->hostile = true;
   if (layer == 0 && (kind == sm::ENC_PIRATE || kind == sm::ENC_SECURITY || kind == sm::ENC_MERCHANT)) {
     char b[112]; snprintf(b, sizeof(b), "CONTACT: %s", o->name); noteBanner(b, 1600);
@@ -1651,7 +1706,7 @@ static void spawnContact() {
 // ============================================================
 //  targeting + context verbs
 // ============================================================
-enum VerbId : uint8_t { VB_NONE = 0, VB_HAIL, VB_ATTACK, VB_DOCK, VB_MINE, VB_SCOOP, VB_SALVAGE, VB_RESCUE, VB_READ, VB_SCAN, VB_CHART };
+enum VerbId : uint8_t { VB_NONE = 0, VB_HAIL, VB_ATTACK, VB_DOCK, VB_MINE, VB_SCOOP, VB_SALVAGE, VB_RESCUE, VB_READ, VB_SCAN, VB_CHART, VB_AUTO, VB_ORBIT };
 struct Chip { uint8_t id; const char *label; uint16_t col; bool enabled; char note[16]; int x, y, w, h; };
 static Chip chips[3];
 static int chipN = 0;
@@ -1692,8 +1747,10 @@ static int verbsFor(const Obj &o, Chip *out) {
         else add(VB_SCOOP, "SCOOP", C, 0, "TOO HOT");
         break;
       }
-      if (o.bodyType == BT_GIANT)
+      if (o.bodyType == BT_GIANT) {
         add(VB_SCOOP, "SCOOP", C, o.radius * 0.45f, p.fuel >= p.fuelCap ? "TANK FULL" : (o.timer > 0 ? "SETTLING" : nullptr));
+        if (flyingMaltese()) add(VB_ORBIT, "ORBIT", B, o.radius * 1.2f, orbitObj >= 0 ? "HOLDING" : nullptr);
+      }
       break;
     case K_POD: add(VB_RESCUE, "RESCUE", G, 40 * reach, nullptr); break;
     case K_WRECK:
@@ -1705,6 +1762,9 @@ static int verbsFor(const Obj &o, Chip *out) {
       add(VB_ATTACK, "ATTACK", R, 90 * gun, nullptr);
       break;
     case K_LANDMARK: add(VB_CHART, "CHART", Y, 170 * reach, nullptr); break;
+    case K_GATE: case K_PORTAL:
+      if (flyingMaltese()) add(VB_AUTO, "AUTO", Y, 600, nullptr);   // the Maltese threads chains for you
+      break;
     default: break;
   }
   return n;
@@ -1724,20 +1784,32 @@ static uint8_t volleys = 0, maxVolleys = 0;
 static bool ambushed = false;
 
 static void ghostFleetHail(Obj &o) {
-  // They trade in routes and fixed points. Surface money means nothing here.
+  // They trade in fixed points. Surface money means little here; a hull of theirs means everything.
   int charted = 0;
   for (int i = 0; i < sm::landmarkCount(); i++) if (sm::landmarkAt(i) && sm::landmarkDiscovered(sm::landmarkAt(i)->id)) charted++;
+  sm::Pilot &p = sm::sheet();
   if (sm::rankOf(sm::CR_DEPTHRUNNER) < 3 || charted < 3) {
     setBanner("GHOST FLEET: they do not answer pilots who still count stars.", 2800);
     sm::grantXp(sm::CR_DEPTHRUNNER, 4);
-  } else if (!sm::flagHas("ghost_trade")) {
-    int pay = 250 + charted * 80;
-    sm::addCredits(pay);
-    sm::flagSet("ghost_trade", 1, false);
-    char b[112]; snprintf(b, sizeof(b), "GHOST FLEET buys your fixed points. They already knew most of them. | +%dcr", pay);
-    setBanner(b, 3200);
   } else {
-    setBanner("GHOST FLEET: a cold nod. The cove remembers your hull.", 2400);
+    int scans = sm::haulCount("fixed point scan");
+    if (scans <= 0) setBanner("GHOST FLEET: bring us what you have charted. The scans, not the stories.", 2800);
+    else {
+      sm::haulTake("fixed point scan", (uint16_t)scans);
+      int pay = scans * 180;
+      sm::addCredits(pay);
+      int8_t sold = sm::flagGet("gf_scans");
+      sold = (int8_t)(sold + scans > 120 ? 120 : sold + scans);
+      sm::flagSet("gf_scans", sold, true);
+      char b[112];
+      if (sold >= 5 && !p.ships[sm::SHIP_GHOST].owned) {
+        sm::shipGrant(sm::SHIP_GHOST);
+        snprintf(b, sizeof(b), "GHOST FLEET: you see what we see. A hull waits for you in any hangar. | +%dcr", pay);
+        sm::journalAdd("The Ghost Fleet gave me one of theirs. It waits in the hangars, quiet.");
+        hx::swell(0.8f, 0.5f, 1.2f);
+      } else snprintf(b, sizeof(b), "GHOST FLEET buys %d scan%s (%d of 5 they want). | +%dcr", scans, scans == 1 ? "" : "s", sold, pay);
+      setBanner(b, 3400);
+    }
   }
   o.done = true;
   saveAll();
@@ -1759,6 +1831,7 @@ static void finishTheater() {
     bool otherLife = life != 0 && life != (int)(1 + sm::sheet().lives % 120);
     sm::discoverLandmark(lm->id);
     sm::atlasFixedPoint(lm->name, lm->band);
+    if (sm::haulAdd("fixed point scan", 1, true)) noteBanner("+1 FIXED POINT SCAN - SOMEONE IN THE DEEP WILL WANT IT", 2000);
     if (first) { char jb[72]; snprintf(jb, sizeof(jb), "Charted %s. It was where the stories said.", lm->name); sm::journalAdd(jb); }
     sm::grantXp(sm::CR_DEPTHRUNNER, first ? (uint16_t)(18 + lm->band * 6) : 4);
     if (otherLife) { showRecognition(lm); char jb[72]; snprintf(jb, sizeof(jb), "%s again. Another sky, the same place.", lm->name); sm::journalAdd(jb); }
@@ -1836,11 +1909,13 @@ static void finishTheater() {
     // a fight that doesn't end in fire usually ends in someone leaving
     if (o.kind == K_SHIP && o.hostile && rf(0, 1) < 0.7f) { o.hostile = false; o.v = norm(o.p - shipPos) * 16.f; }
     if (o.kind == K_POD && !attack) { if (target == oi) target = -1; killObj(oi); }
-    else if (o.kind == K_ROCK && verb == VB_MINE && sm::capTier(sm::CAP_MINING) >= 3) {
-      // high-mark cutters: the rock goes, the tractor brings the pieces home
-      addBoom(o.p, o.radius * 2.f, rgb(255, 210, 140));
-      addFrags(o.p, 6 + sm::capTier(sm::CAP_MINING), o.col);
-      int extra = sm::capTier(sm::CAP_MINING);
+    else if (o.kind == K_ROCK && verb == VB_MINE && (sm::capTier(sm::CAP_MINING) >= 3 || flyingHoney())) {
+      // high-mark cutters (and the HoneyBee at any mark): the rock goes, the pieces come home
+      bool hb = flyingHoney();
+      addBoom(o.p, o.radius * (hb ? 3.2f : 2.f), rgb(255, 210, 140));
+      if (hb) { addBoom(o.p, o.radius * 1.6f, rgb(200, 230, 140)); crossFlash = 0.25f; }
+      addFrags(o.p, 6 + sm::capTier(sm::CAP_MINING) + (hb ? 8 : 0), o.col);
+      int extra = sm::capTier(sm::CAP_MINING) + (hb ? 3 : 0);
       if (sm::haulAdd("ore", (uint16_t)extra, true)) { char nb[48]; snprintf(nb, sizeof(nb), "TRACTOR: +%d ORE", extra); noteBanner(nb, 1400); }
       hx::boom(0.6f);
       if (target == oi) target = -1;
@@ -1878,8 +1953,10 @@ static void runVerb(uint8_t id) {
     setBanner("DOCKING COMPUTER ENGAGED", 1400);
     return;
   }
+  if (id == VB_AUTO) { autoNav = true; autoNavObj = target; orbitObj = -1; setBanner("AUTONAV - THREADING THE CHAIN", 1500); return; }
+  if (id == VB_ORBIT) { orbitObj = target; autoNav = false; setBanner("ORBIT HELD - SETTLE IN", 1500); return; }
   if (id == VB_HAIL) setBanner("OPENING COMM...", 900);
-  if (id == VB_ATTACK && cloakT > 0.f) { cloakT = 0.f; cloakCD = fmaxf(15.f, 45.f - 4.f * sm::capTier(sm::CAP_CLOAK)); setBanner("CLOAK DROPS AS THE GUNS FIRE", 1200); }
+  if (id == VB_ATTACK && cloakT > 0.f && !flyingGhost()) { cloakT = 0.f; cloakCD = fmaxf(15.f, 45.f - 4.f * sm::capTier(sm::CAP_CLOAK)); setBanner("CLOAK DROPS AS THE GUNS FIRE", 1200); }
   beginTheater(target, id);
 }
 
@@ -1912,9 +1989,13 @@ static void theaterTick() {
     if (!ambushed || volleys > 1) {
       // the guns, by mark: bolts, heavier bolts, lances, missiles, then something dazzling
       uint8_t w = sm::capTier(sm::CAP_WEAPONS);
+      if (flyingFalcor()) w = (uint8_t)(w + 2);   // the Falcor dazzles at every mark
       bool prism = w >= 6;
       uint16_t c1 = prism ? hsv(tNow * 220.f, 0.6f, 1.f) : w >= 3 ? rgb(120, 245, 255) : rgb(130, 255, 190);
+      if (flyingFalcor()) c1 = hsv(180.f + rf(-25.f, 45.f), 0.5f, 1.f);
+      if (flyingGhost()) c1 = (volleys & 1) ? rgb(176, 96, 255) : rgb(70, 235, 215);   // purple and teal
       float tx = sx + rf(-5, 5), ty = sy + rf(-5, 5);
+      if (flyingFalcor()) { addBolt(48, H - 30, tx, ty, hsv(170.f + rf(0, 60), 0.45f, 1.f), 2, 8); addBolt(272, H - 30, tx, ty, hsv(170.f + rf(0, 60), 0.45f, 1.f), 2, 8); }
       if (w <= 1) { addBolt(120, H - 4, tx, ty, c1); addBolt(200, H - 4, tx, ty, c1); }
       else if (w == 2) {
         addBolt(110, H - 4, tx, ty, c1, 2); addBolt(210, H - 4, tx, ty, c1, 2);
@@ -1923,7 +2004,9 @@ static void theaterTick() {
         addBolt(104, H - 4, tx, ty, c1, prism ? 4 : 3, 9); addBolt(216, H - 4, tx, ty, c1, prism ? 4 : 3, 9);
         addSparks(tx, ty, prism ? 10 : 5, prism ? hsv(tNow * 300.f, 0.4f, 1.f) : rgb(200, 255, 255), 70);
         if (w >= 4) for (int m = 0; m < w - 2 && m < 5; m++)
-          addMissile(m & 1 ? 230.f : 90.f, (float)(H - 8), tx + rf(-6, 6), ty + rf(-6, 6), prism ? hsv(m * 60.f + tNow * 200.f, 0.5f, 1.f) : rgb(255, 210, 120), 0.35f + m * 0.05f);
+          addMissile(m & 1 ? 230.f : 90.f, (float)(H - 8), tx + rf(-6, 6), ty + rf(-6, 6),
+                     flyingGhost() ? ((m & 1) ? rgb(176, 96, 255) : rgb(70, 235, 215)) : flyingFalcor() ? hsv(175.f + m * 22.f, 0.4f, 1.f)
+                     : prism ? hsv(m * 60.f + tNow * 200.f, 0.5f, 1.f) : rgb(255, 210, 120), 0.35f + m * 0.05f);
       }
       hx::pop(clampf(0.45f + w * 0.06f, 0.4f, 0.9f), 0.03f + w * 0.004f);
     }
@@ -1951,6 +2034,12 @@ static void theaterTick() {
 //  station
 // ============================================================
 static constexpr int STATION_ROWS = 6;
+// station services: the board, the hangar (S.H.A.W. equipment), the market
+static uint8_t stationPage = 0;            // 0 board, 1 hangar, 2 market
+struct HangarOffer { uint8_t cap, mark; int price; bool fitted; };
+static HangarOffer hangar[3];
+static uint8_t hangarN = 0, hangarSel = 0, marketSel = 0;
+static uint8_t hangarTab = 0, shipSel = 0;   // hangar: 0 equipment, 1 ships
 static bool stationOpen = false;
 static int stationChoice = 0;
 static int stationIdx = -1;
@@ -1959,30 +2048,185 @@ static float launchAnim = 0;    // being taxied back out
 static char stationMoodText[112] = "";
 static sm::Opportunity stationOpportunity{};
 static bool opportunityTaken = false;
-static int gearCap = 0;
 static char courseName[24] = "";   // a destination committed at the board
 static uint8_t courseDepth = 0, courseFlags = 0;
 
+static const Obj *dockedStation();
 static int refuelCost() {
   const sm::Pilot &p = sm::sheet();
   int fp = sm::fuelPrice() * (layer > 0 ? 3 : 2) / 2;   // fuel hauled down to an outpost costs more
+  { const Obj *st = dockedStation(); if (st && st->uses == BR_DESERET) fp = fp * 7 / 10; }   // Deseret undercuts on fuel
   return (p.fuelCap - p.fuel) * fp + (p.hullMax - p.hull) * sm::repairPrice();
 }
 static int rumorPrice() { return 12; }
-static int gearPrice() { return 80 + sm::capTier((sm::CapId)gearCap) * 55; }
+
+static uint8_t equipStep(uint8_t mark) { return mark <= 2 ? 0 : mark <= 4 ? 1 : mark <= 6 ? 2 : 3; }
+static const Obj *dockedStation() { return stationIdx >= 0 && objs[stationIdx].kind == K_STATION ? &objs[stationIdx] : nullptr; }
+
+// The market here: who runs the dock, the star, the bodies, the place.
+static void setDockEcon() {
+  const Obj *st = dockedStation();
+  sm::DockEcon e{};
+  e.brand = st ? st->uses : 0; e.star = sunType; e.layer = (uint8_t)layer;
+  e.outpost = st && st->bodyType == SS_OUTPOST;
+  for (auto &o : objs) { if (o.kind == K_BODY && o.bodyType == BT_GIANT) e.giant = true; if (o.kind == K_BODY && o.bodyType == BT_ROCKY) e.rocky = true; if (o.kind == K_ROCK) e.rocks = true; }
+  e.hash = placeHash(hereName) ^ (uint32_t)layer * 7919u;
+  sm::marketSetDock(e);
+}
+
+// S.H.A.W. equipment names, four art steps per capability
+static const char *equipName(uint8_t cap, uint8_t mark) {
+  static const char *n[9][4] = {
+    {"LASER TURRET", "AUTOCANNON", "TWIN AUTOCANNON", "PLASMA CANNON"},
+    {"SHIELD GENERATOR", "DEFLECTOR RINGS", "DEFLECTOR ARRAY", "SHIELD MATRIX"},
+    {"HARVESTER DRILL", "CORE DRILL", "MULTI-DEBRIS RIG", "ANTI-GRAV CRUSHER"},
+    {"RADAR DISH", "SENSOR ARRAY", "SCANNER DOME", "INTEGRATED SUITE"},
+    {"CARGO TRAILER", "CARGO HAULER", "MODULAR TRAIN", "MODULAR TRAIN XL"},
+    {"STABILIZER FIN", "VECTOR FIN", "MANEUVER WINGLETS", "GIMBAL THRUSTERS"},
+    {"META-HULL PLATING", "META-HULL PLATING", "META-HULL LATTICE", "META-HULL LATTICE"},
+    {"CLOAK DEVICE", "PHASE CLOAK", "STEALTH PLATING", "STEALTH PLATING XL"},
+    {"FUEL TANK", "TWIN TANKS", "CAGED TANKS", "EXTERNAL POD"}};
+  return n[cap < 9 ? cap : 0][equipStep(mark)];
+}
+static const char *equipEffect(uint8_t cap, uint8_t mark, char *buf, size_t n) {
+  static const char *layerShort[5] = {"REAL", "SHALLOWS", "ROADS", "BELOW", "THE COVE"};
+  switch (cap) {
+    case sm::CAP_WEAPONS: snprintf(buf, n, "%s", mark >= 6 ? "PRISMATIC LANCES" : mark >= 4 ? "LANCES + MISSILES" : mark >= 3 ? "LANCE BEAMS" : "HEAVIER BOLTS"); break;
+    case sm::CAP_SHIELDS: snprintf(buf, n, "-%d%% DAMAGE", (int)(clampf(0.07f * mark, 0.f, 0.65f) * 100)); break;
+    case sm::CAP_MINING: snprintf(buf, n, "%s", mark >= 3 ? "SHATTER + TRACTOR" : "MORE YIELD"); break;
+    case sm::CAP_SCANNERS: snprintf(buf, n, "+%d%% REACH", 25 * mark); break;
+    case sm::CAP_TRAILER: snprintf(buf, n, "HOLD %d", 20 + 14 * mark + 3 * (sm::sheet().rank[sm::CR_HAULER] / 4)); break;
+    case sm::CAP_STABILIZER: snprintf(buf, n, "RATED: %s", layerShort[mark > 4 ? 4 : mark]); break;
+    case sm::CAP_BULKHEADS: snprintf(buf, n, "DEPTH RATING +"); break;
+    case sm::CAP_CLOAK: snprintf(buf, n, "CLOAK %dS", 8 + 6 * mark); break;
+    default: snprintf(buf, n, "TANK %d, PORTALS -%d%%", 100 + 6 * mark, (int)(clampf(0.07f * mark, 0.f, 0.4f) * 100)); break;
+  }
+  return buf;
+}
+
+// Three pieces of equipment (two at an outpost), leaning on what the builder makes.
+static void rollHangar() {
+  static const uint8_t prefs[5][4] = {
+    {sm::CAP_SCANNERS, sm::CAP_STABILIZER, sm::CAP_FUELSYS, sm::CAP_SHIELDS},     // Liminar
+    {sm::CAP_WEAPONS, sm::CAP_CLOAK, sm::CAP_SHIELDS, sm::CAP_STABILIZER},        // Portex
+    {sm::CAP_TRAILER, sm::CAP_SHIELDS, sm::CAP_WEAPONS, sm::CAP_BULKHEADS},       // MaltaPlex
+    {sm::CAP_MINING, sm::CAP_FUELSYS, sm::CAP_BULKHEADS, sm::CAP_TRAILER},        // Deseret
+    {sm::CAP_MINING, sm::CAP_TRAILER, sm::CAP_FUELSYS, sm::CAP_WEAPONS}};         // Freehold
+  static const float priceMul[5] = {1.15f, 1.f, 1.f, 0.95f, 0.85f};
+  const Obj *st = dockedStation();
+  uint8_t br = st ? (st->uses < 5 ? st->uses : 4) : 0;
+  bool outpost = st && st->bodyType == SS_OUTPOST;
+  uint8_t want = outpost ? 2 : 3;
+  hangarN = 0; hangarSel = 0;
+  for (int tries = 0; hangarN < want && tries < 30; tries++) {
+    uint8_t cap = (hangarN < want - 1) ? prefs[br][sm::urand() % 4] : (uint8_t)(sm::urand() % sm::CAP_COUNT);
+    bool dup = false; for (int i = 0; i < hangarN; i++) if (hangar[i].cap == cap) dup = true;
+    uint8_t mark = (uint8_t)(sm::capTier((sm::CapId)cap) + 1);
+    if (dup || mark > 10) continue;
+    int price = (int)((80 + mark * 55 + layer * 30) * priceMul[br]);
+    hangar[hangarN++] = {cap, mark, price, false};
+  }
+}
+
+static void hangarBuy() {
+  if (hangarSel >= hangarN) return;
+  HangarOffer &h = hangar[hangarSel];
+  char buf[64];
+  if (h.fitted || sm::capTier((sm::CapId)h.cap) >= h.mark) { setBanner("ALREADY FITTED", 1000); return; }
+  if (!sm::spendCredits(h.price)) { setBanner("NOT ENOUGH CREDIT FOR THAT", 1300); hx::pop(0.12f, 0.01f); return; }
+  sm::earnCap((sm::CapId)h.cap, h.mark);
+  h.fitted = true;
+  snprintf(buf, sizeof(buf), "%s MK%u FITTED", equipName(h.cap, h.mark), h.mark);
+  setBanner(buf, 1800);
+  hx::swell(0.55f, 0.15f, 0.4f);
+  saveAll();
+}
+
+// ships: who sells what (the license Mantis is always yours; the flagship is never for sale)
+static bool shipSoldHere(uint8_t t) {
+  const Obj *st = dockedStation();
+  uint8_t br = st ? st->uses : 255;
+  if (layer > 0) return false;   // nobody sells hulls down here
+  return (t == sm::SHIP_FALCOR && br == BR_LIMINAR) || (t == sm::SHIP_MALTESE && br == BR_MALTAPLEX) ||
+         (t == sm::SHIP_HONEYBEE && br == BR_DESERET);
+}
+static void shipAction(uint8_t t) {
+  sm::Pilot &p = sm::sheet();
+  const sm::ShipRecord &r = p.ships[t];
+  char buf[64];
+  if (t == p.activeShip) { setBanner("YOU ARE FLYING HER", 900); return; }
+  if (r.owned && r.lost) {
+    if (sm::shipRecover(t)) { snprintf(buf, sizeof(buf), "%s REBUILT FROM THE RECORD", sm::shipSpec(t).name); setBanner(buf, 1800); hx::swell(0.5f, 0.2f, 0.5f); saveAll(); }
+    else setBanner("NOT ENOUGH CREDIT FOR THE REBUILD", 1300);
+    return;
+  }
+  if (r.owned) {
+    int data = sm::haulCount("fixed point scan") + sm::haulCount("anomaly scan");   // data rides with the pilot
+    if (p.holdUsed > data) { setBanner("EMPTY THE HOLD: COMMODITIES DON'T SURVIVE THE PHASE", 2000); hx::pop(0.12f, 0.01f); return; }
+    if (sm::shipSwap(t)) {
+      snprintf(buf, sizeof(buf), "TELEPORTED - NOW FLYING THE %s", sm::shipSpec(t).name);
+      setBanner(buf, 2000); hx::swell(0.7f, 0.25f, 0.6f); crossFlash = 0.6f;
+      rollHangar(); saveAll();
+    }
+    return;
+  }
+  if (!shipSoldHere(t)) { setBanner(t == sm::SHIP_GHOST ? "NOT FOR SALE. NOT ANYWHERE." : "NOT SOLD AT THIS DOCK", 1300); return; }
+  if (sm::shipBuy(t)) {
+    snprintf(buf, sizeof(buf), "THE %s IS YOURS. SWAP IN WHEN YOU'RE READY.", sm::shipSpec(t).name);
+    setBanner(buf, 2200); hx::swell(0.6f, 0.2f, 0.5f);
+    char jb[72]; snprintf(jb, sizeof(jb), "Bought the %s. %s.", sm::shipSpec(t).name, sm::shipSpec(t).role); sm::journalAdd(jb);
+    saveAll();
+  } else setBanner("NOT ENOUGH CREDIT FOR HER", 1300);
+}
+
+// the market: buy and sell by the unit
+static bool leadOwns(const char *hold) {
+  const sm::Contract &c = sm::contract();
+  const char *owned = c.live ? sm::contractCargo(c.kind) : nullptr;
+  return owned && strcmp(owned, hold) == 0;
+}
+static void marketTrade(bool buy, int qty) {
+  sm::Good g = (sm::Good)marketSel;
+  if (!sm::marketTrades(g)) { setBanner("THIS DOCK DOES NOT TRADE THAT", 1100); return; }
+  const char *hold = sm::goodHold(g);
+  sm::Pilot &p = sm::sheet();
+  char buf[64];
+  if (buy) {
+    int each = sm::marketBuy(g);
+    int room = p.holdCap - p.holdUsed;
+    int can = (int)(p.credits / (each > 0 ? each : 1));
+    int n = qty < room ? qty : room; n = n < can ? n : can;
+    if (n <= 0) { setBanner(room <= 0 ? "THE HOLD IS FULL" : "NOT ENOUGH CREDIT", 1100); hx::pop(0.12f, 0.01f); return; }
+    sm::spendCredits(n * each);
+    sm::haulAdd(hold, (uint16_t)n, true);
+    snprintf(buf, sizeof(buf), "BOUGHT %d %s  -%dcr", n, sm::goodName(g), n * each);
+  } else {
+    if (leadOwns(hold)) { setBanner("THAT LOAD BELONGS TO YOUR LEAD", 1300); return; }
+    int have = sm::haulCount(hold);
+    int n = qty < have ? qty : have;
+    if (n <= 0) { setBanner("NONE IN THE HOLD", 1000); return; }
+    int each = sm::marketSell(g);
+    sm::haulTake(hold, (uint16_t)n);
+    sm::addCredits(n * each);
+    sm::grantXp(sm::CR_TRADER, (uint16_t)(1 + n * each / 40));
+    snprintf(buf, sizeof(buf), "SOLD %d %s  +%dcr", n, sm::goodName(g), n * each);
+  }
+  setBanner(buf, 1400);
+  hx::pop(0.25f, 0.02f);
+  saveAll();
+}
 static int sellableValue(bool doSell) {
   sm::Pilot &p = sm::sheet();
   const char *owned = sm::contract().live ? sm::contractCargo(sm::contract().kind) : nullptr;
   int pay = 0; char names[sm::MAX_HAUL_LINES][sm::NAME_LEN]; int nn = 0;
   for (uint8_t i = 0; i < p.haulN; ++i) {
     if (owned && strncmp(p.haul[i].what, owned, sm::NAME_LEN) == 0) continue;
-    bool scan = strcmp(p.haul[i].what, "anomaly scan") == 0;
-    if (scan && layer == 0) continue;   // nobody up here believes in them, let alone buys them
-    int each = scan ? 60 + 40 * layer : sm::marketPrice(p.haul[i].what, p.haul[i].legal != 0);
-    if (layer > 0 && (strcmp(p.haul[i].what, "rock") == 0 || strcmp(p.haul[i].what, "ore") == 0)) each *= 2;
+    int each = sm::marketSellLine(p.haul[i].what, p.haul[i].legal != 0);   // this dock's prices
+    if (each <= 0) continue;                                                // (no buyer for deep scans up here)
     pay += p.haul[i].amount * each;
     strncpy(names[nn], p.haul[i].what, sm::NAME_LEN); nn++;
   }
+  { const Obj *st = dockedStation(); if (st && st->uses == BR_DESERET) pay = pay * 3 / 4; }   // Deseret skimps on a dumped hold (their market is fair)
   if (doSell) for (int i = 0; i < nn; i++) sm::haulRemove(names[i]);
   return pay;
 }
@@ -2005,11 +2249,18 @@ static void boardLanes() {
 
 static void openBoard() {
   stationOpen = true; stationChoice = 0;
+  stationPage = 0; marketSel = 0; hangarTab = 0; shipSel = sm::sheet().activeShip;
+  { const Obj *st = dockedStation(); sm::contractSetIssuer(st ? st->uses : 0); }
+  setDockEcon();
+  rollHangar();
   if (layer > 0) sm::contractOfferDeep();   // deep outposts post deep work
-  else { boardLanes(); sm::contractOffer(); }
+  else {
+    boardLanes();
+    const Obj *st = dockedStation();
+    bool faithful = st && st->uses == BR_DESERET && sm::flagGet("deseret") >= 5 && rf(0, 1) < 0.35f;
+    if (!(faithful && sm::contractOffer(sm::CK_DEPTHRUN) && sm::contractOfferPeek().kind == sm::CK_DEPTHRUN)) sm::contractOffer();
+  }
   opportunityTaken = layer > 0 || !sm::makeOpportunity(stationOpportunity, 0);
-  gearCap = (int)(sm::urand() % sm::CAP_COUNT);
-  if (sm::sheet().rank[sm::CR_DEPTHRUNNER] >= 4 && (sm::urand() % 100) < 35) gearCap = sm::CAP_STABILIZER;
   asciiCopy(stationMoodText, sizeof(stationMoodText), sm::stationMood((uint8_t)(sm::urand() % 5), sm::worldPressure(), sm::urand()));
   sm::grantXp(sm::CR_TRADER, 1);
   courseName[0] = 0;
@@ -2107,16 +2358,7 @@ static void stationCommit() {
       if (pay > 0) {
         sellableValue(true); sm::addCredits(pay); sm::grantXp(sm::CR_TRADER, (uint16_t)(6 + pay / 25));
         snprintf(buf, sizeof(buf), "HAUL SOLD +%dcr", pay); setBanner(buf, 1900);
-      } else {
-        uint8_t t = sm::capTier((sm::CapId)gearCap);
-        if (t >= 10) { setBanner("NOTHING HERE BEATS WHAT YOU FLY", 1500); break; }
-        if (sm::spendCredits(gearPrice())) {
-          sm::earnCap((sm::CapId)gearCap, (uint8_t)(t + 1));
-          snprintf(buf, sizeof(buf), "%s %u - EQUIPPED", sm::capName((sm::CapId)gearCap), t + 1); upcase(buf);
-          setBanner(buf, 1900);
-          gearCap = (int)(sm::urand() % sm::CAP_COUNT);
-        } else setBanner("GEAR IS TOO EXPENSIVE HERE", 1500);
-      }
+      } else { stationPage = 1; setBanner("EQUIPMENT IS IN THE HANGAR", 1200); }
       break;
     }
     case 4:
@@ -2295,6 +2537,12 @@ static void onDestroyedFlow() {
   sm::contractAbandon();
   sm::tripEnd();
   sm::atlasWipe();
+  { uint8_t lost = sm::takeLostShip();
+    if (lost != 255) {
+      char jb[72];
+      snprintf(jb, sizeof(jb), sm::sheet().ships[lost].lost ? "Lost the %s. The teleporter has a record of her." : "Lost the %s. No record. She's gone.", sm::shipSpec(lost).name);
+      sm::journalAdd(jb);
+    } }
   { char jb[72]; snprintf(jb, sizeof(jb), "Pod launched. Life %lu ends. No names out here.", (unsigned long)sm::sheet().lives); sm::journalAdd(jb); }
   theater = TH_NONE; stationOpen = false; mapOpen = false; statusOpen = false; endingOpen = false; dockAnim = 0; launchAnim = 0;
   queuedN = 0;
@@ -2316,7 +2564,9 @@ static bool touchDown = false, dragging = false, sliding = false;
 static int touchX0 = 0, touchY0 = 0, touchLX = 0, touchLY = 0;
 static uint32_t touchT0 = 0;
 
-static constexpr int ROW_Y0 = 46, ROW_PITCH = 23, ROW_H = 20;
+static constexpr int ROW_Y0 = 48, ROW_PITCH = 23, ROW_H = 20;
+static constexpr int SVC_X = 272, SVC_W = 44, SVC_Y[3] = {6, 74, 142}, SVC_H = 62;
+
 static constexpr int SLIDER_X = W - 22, SLIDER_Y0 = 44, SLIDER_Y1 = 196;
 
 static void captureNeutral() {
@@ -2334,6 +2584,7 @@ static void cycleTarget() {
     if (!project(objs[i].p, sx, sy, z) || !onScreen(sx, sy)) continue;
     float score = fabsf(sx - 160) + fabsf(sy - 120) + z * 0.2f;
     if (objs[i].kind == K_GATE || objs[i].kind == K_PORTAL) score += 60;
+    if (flyingMaltese() && objs[i].kind == K_SHIP && (objs[i].hostile || objs[i].enc == sm::ENC_PIRATE || objs[i].enc == sm::ENC_SUBPIRATE)) score -= 1000;   // deterrent targeting
     if (score < bestScore) { bestScore = score; best = i; }
   }
   target = best;
@@ -2358,9 +2609,30 @@ static void handleTap(int x, int y) {
   }
   if (endingOpen) { endingOpen = false; setBanner("KEEP FLYING. THE NAMES WILL BE THERE.", 3000); return; }
   if (stationOpen) {
-    if (y >= ROW_Y0 && y < ROW_Y0 + STATION_ROWS * ROW_PITCH) {
-      int row = (y - ROW_Y0) / ROW_PITCH;
-      if (row == stationChoice) stationCommit(); else { stationChoice = row; hx::pop(0.15f, 0.01f); }
+    if (x >= SVC_X - 2) {   // the services column
+      for (int i = 0; i < 3; i++) if (y >= SVC_Y[i] && y < SVC_Y[i] + SVC_H && stationPage != i) { stationPage = (uint8_t)i; hx::pop(0.18f, 0.015f); }
+      return;
+    }
+    if (stationPage == 0) {
+      if (y >= ROW_Y0 && y < ROW_Y0 + STATION_ROWS * ROW_PITCH) {
+        int row = (y - ROW_Y0) / ROW_PITCH;
+        if (row == stationChoice) stationCommit(); else { stationChoice = row; hx::pop(0.15f, 0.01f); }
+      }
+    } else if (stationPage == 1) {
+      if (y >= 46 && y < 62) { uint8_t t = x < 136 ? 0 : 1; if (t != hangarTab) { hangarTab = t; hx::pop(0.15f, 0.01f); } }
+      else if (hangarTab == 1) {
+        if (y >= 64 && y < 64 + sm::SHIP_COUNT * 25) { uint8_t t = (uint8_t)((y - 64) / 25); if (t == shipSel) shipAction(t); else { shipSel = t; hx::pop(0.15f, 0.01f); } }
+      } else if (y >= 64 && y < 188 && x >= 12) {
+        int card = (x - 12) / 84;
+        if (card < hangarN) { if (card == hangarSel) hangarBuy(); else { hangarSel = (uint8_t)card; hx::pop(0.15f, 0.01f); } }
+      }
+    } else {
+      if (y >= 58 && y < 58 + sm::G_COUNT * 15) { marketSel = (uint8_t)((y - 58) / 15); hx::pop(0.12f, 0.01f); }
+      else if (y >= 180 && y < 202 && x >= 12) {
+        int b = (x - 12) / 63;
+        if (b == 0) marketTrade(true, 1); else if (b == 1) marketTrade(true, 5);
+        else if (b == 2) marketTrade(false, 1); else if (b == 3) marketTrade(false, 999);
+      }
     }
     return;
   }
@@ -2415,6 +2687,7 @@ static void updateInput() {
       if (!dragging && (abs(td.x - touchX0) + abs(td.y - touchY0)) > 7 && flying) dragging = true;
       if (dragging && flying && launchAnim <= 0) {
         // slide = look around: direct yaw + pitch (not roll)
+        autoNav = false; orbitObj = -1;   // the pilot takes the stick
         shipB.yaw(dx * 0.0095f);
         shipB.pitch(-dy * 0.011f);
         shipB.fix();
@@ -2455,13 +2728,29 @@ static void updateInput() {
   if (lostOpen || endingOpen) { if (M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed()) handleTap(0, 0); return; }
   if (stationOpen) {
     if (M5.BtnA.wasPressed()) launch();
-    else if (M5.BtnB.wasPressed()) stationCommit();
-    else if (M5.BtnC.wasPressed()) { stationChoice = (stationChoice + 1) % STATION_ROWS; hx::pop(0.12f, 0.01f); }
+    else if (M5.BtnB.wasPressed()) { if (stationPage == 0) stationCommit(); else if (stationPage == 1) { if (hangarTab) shipAction(shipSel); else hangarBuy(); } else marketTrade(true, 1); }
+    else if (M5.BtnC.wasPressed()) {
+      if (stationPage == 0) stationChoice = (stationChoice + 1) % STATION_ROWS;
+      else if (stationPage == 1) { if (hangarTab) shipSel = (uint8_t)((shipSel + 1) % sm::SHIP_COUNT); else hangarSel = (uint8_t)(hangarN ? (hangarSel + 1) % hangarN : 0); }
+      else marketSel = (uint8_t)((marketSel + 1) % sm::G_COUNT);
+      hx::pop(0.12f, 0.01f);
+    }
     return;
   }
   if (M5.BtnA.wasHold()) { mapOpen = true; mapPage = 0; mapTrace = -1; hx::pop(0.25f, 0.02f); return; }
   if (M5.BtnA.wasClicked()) cycleTarget();   // release edge: a hold never cycles
   if (M5.BtnC.wasHold()) { statusOpen = true; statusPage = 0; hx::pop(0.25f, 0.02f); return; }
+  if (M5.BtnB.wasHold() && flyingGhost()) {   // the flagship's cloak: on and off, for as long as you like
+    if (cloakT > 0.f) { cloakT = 0.f; cloakCD = 0.f; setBanner("CLOAK DOWN", 800); }
+    else {
+      cloakT = 1e6f; cloakCD = 0.f;
+      if (theater == TH_COMBAT) { theater = TH_NONE; theaterObj = -1; }
+      for (auto &o : objs) if (o.kind == K_SHIP && o.hostile) { o.engaged = false; o.timer = 30.f; }
+      setBanner("CLOAKED", 900);
+      hx::swell(0.35f, 0.3f, 0.5f);
+    }
+    return;
+  }
   if (M5.BtnB.wasHold()) {
     uint8_t ct = sm::capTier(sm::CAP_CLOAK);
     if (!ct) { setBanner("NO CLOAK FITTED", 1000); hx::pop(0.12f, 0.01f); }
@@ -2476,7 +2765,7 @@ static void updateInput() {
     }
     return;
   }
-  if (M5.BtnB.wasClicked()) { captureNeutral(); tiltX = tiltY = tiltRoll = 0; rateYaw = ratePitch = rateRoll = 0; setBanner("ATTITUDE CENTERED", 900); hx::pop(0.2f, 0.02f); }
+  if (M5.BtnB.wasClicked()) { autoNav = false; orbitObj = -1; captureNeutral(); tiltX = tiltY = tiltRoll = 0; rateYaw = ratePitch = rateRoll = 0; setBanner("ATTITUDE CENTERED", 900); hx::pop(0.2f, 0.02f); }
   if (M5.BtnC.wasClicked()) { throttleT = 0.5f; setBanner("CRUISE", 700); hx::pop(0.2f, 0.02f); }   // release edge: a hold opens status
 
   if (!neutralValid) captureNeutral();
@@ -2511,9 +2800,11 @@ static void updateInput() {
 //  world update
 // ============================================================
 // stabilizers make the ship faster where the going is rough: a little in real space, more below
+static const sm::ShipSpec &flying() { return sm::shipSpec(sm::sheet().activeShip); }
 static float cruiseSpeed() {
   float st = sm::capTier(sm::CAP_STABILIZER);
-  return layer == 0 ? 13.f * (1.f + 0.015f * st) : (15.f + layer * 2.5f) * (1.f + 0.04f * st);
+  float sp = flying().speed;
+  return sp * (layer == 0 ? 13.f * (1.f + 0.015f * st) : (15.f + layer * 2.5f) * (1.f + 0.04f * st));
 }
 
 // Turbulence. Real space: at most a faint tremble near portals and heavy bodies.
@@ -2546,7 +2837,7 @@ static void applyTurbulence() {
     shakeX = rf(-1, 1) * turbulence * 0.8f; shakeY = rf(-1, 1) * turbulence * 0.8f;
     return;
   }
-  uint8_t st = sm::capTier(sm::CAP_STABILIZER);
+  uint8_t st = (uint8_t)(sm::capTier(sm::CAP_STABILIZER) + flying().deepCalm);
   int lacking = layer - (st > 4 ? 4 : st);                     // layers this stabilizer is not rated for
   int overHull = layer - (int)sm::depthQuery((uint8_t)layer).maxBand;
   turbRated = lacking <= 0;
@@ -2589,7 +2880,44 @@ static void applyTurbulence() {
 static float speedWanted() {
   // 0 .. 0.5 ramps stop..cruise, 0.5 .. 1 ramps cruise..boost (2x)
   float c = cruiseSpeed();
-  return throttleT <= 0.5f ? c * (throttleT / 0.5f) : c * (1.f + (throttleT - 0.5f) * 2.f);
+  // the top end is the ship's: the ghostfleet flagship is manageable at cruise and wild flat out
+  return throttleT <= 0.5f ? c * (throttleT / 0.5f) : c * (1.f + (throttleT - 0.5f) * 2.f * flying().boost);
+}
+
+static void steerAt(V3 aim, float rate) {
+  V3 loc = shipB.toLocal(aim - shipPos);
+  shipB.yaw(clampf(atan2f(loc.x, loc.z), -rate * dt, rate * dt));
+  shipB.pitch(clampf(-atan2f(loc.y, loc.z), -rate * dt, rate * dt));
+  shipB.fix();
+}
+static void autoNavStep() {
+  sm::Trip &tr = sm::trip();
+  int gi = (tr.active && navObj >= 0 && objs[navObj].kind != K_NONE) ? navObj : autoNavObj;
+  if (gi < 0 || (objs[gi].kind != K_GATE && objs[gi].kind != K_PORTAL)) {
+    autoNav = false; autoNavObj = -1;
+    if (!tr.active) setBanner("AUTONAV - ARRIVED", 1200);
+    return;
+  }
+  autoNavObj = gi; target = gi;
+  Obj &g = objs[gi];
+  V3 n = g.o.f, rel = shipPos - g.p;
+  float ax = dot(rel, n), latd = len(rel - n * ax), sg = ax >= 0.f ? 1.f : -1.f, d = fabsf(ax);
+  V3 aim = (latd > d * 0.35f + 2.f && d > 12.f) ? g.p + n * (sg * clampf(d * 0.5f, 12.f, 70.f)) : g.p - n * (sg * 10.f);
+  steerAt(aim, 1.3f);
+  throttleT = 0.5f;
+}
+static void orbitStep() {
+  if (orbitObj < 0 || objs[orbitObj].kind != K_BODY) { orbitObj = -1; return; }
+  Obj &b = objs[orbitObj];
+  V3 rel = shipPos - b.p; float r = len(rel);
+  V3 radial = rel * (1.f / (r > 1e-3f ? r : 1.f));
+  V3 tan = cross(b.o.u, radial); if (len(tan) < 0.1f) tan = cross(shipB.u, radial);
+  tan = norm(tan);
+  float want = b.radius * 1.3f;   // inside scooping range, above the cloud tops
+  V3 dir = norm(tan + radial * clampf((want - r) / (b.radius * 0.3f), -0.8f, 0.8f));
+  steerAt(shipPos + dir * 40.f, 1.0f);
+  throttleT = 0.32f;
+  if (b.timer <= 0.f && sm::sheet().fuel < sm::sheet().fuelCap && theater == TH_NONE && surfaceDist(b) < b.radius * 0.45f) { target = orbitObj; runVerb(VB_SCOOP); }
 }
 
 static void autopilot() {
@@ -2810,6 +3138,15 @@ static void updateWorld() {
   serviceBanner();
   sm::Contract done;
   if (sm::contractTakeCompleted(done)) {
+    if (done.issuer == BR_DESERET) {
+      static const struct { int8_t at; const char *line; } beats[] = {
+        {2, "A Deseret clerk calls the frontier 'the outer courts'. Odd phrasing."},
+        {4, "Deseret charts name places below the roads. Nobody else's do."},
+        {7, "Deseret asked if I'd consider a berth 'below'. Said I'd been faithful."},
+        {10, "Their elder said the deep is not a road. It is land. And land is held."}};
+      int8_t st = sm::flagGet("deseret");
+      for (auto &b : beats) if (st == b.at) sm::journalAdd(b.line);
+    }
     char b[112]; snprintf(b, sizeof(b), "JOB DONE: %s +%dcr", done.title, done.pay);
     { char jb[72]; snprintf(jb, sizeof(jb), "Finished %s%s%s. Paid %d.", done.title, done.dest[0] ? " to " : "", done.dest, done.pay); sm::journalAdd(jb); }
     noteBanner(b, 2800); hx::swell(0.5f, 0.1f, 0.3f);
@@ -2833,11 +3170,14 @@ static void updateWorld() {
 
   // attitude: tilt aims, with a little mass
   if (dockTarget >= 0) autopilot();
+  else if (autoNav) autoNavStep();
+  else if (orbitObj >= 0) orbitStep();
   else {
-    float k = 1.f - expf(-dt / 0.12f);
-    rateYaw += (-tiltX * 1.15f - rateYaw) * k;
-    ratePitch += (-tiltY * 1.0f - ratePitch) * k;
-    rateRoll += (tiltRoll * 1.2f - rateRoll) * k;
+    const sm::ShipSpec &fs = flying();   // the Mantis is 1.0 on both: the original feel
+    float k = 1.f - expf(-dt / (0.12f / fs.agility));
+    rateYaw += (-tiltX * 1.15f * fs.turn - rateYaw) * k;
+    ratePitch += (-tiltY * 1.0f * fs.turn - ratePitch) * k;
+    rateRoll += (tiltRoll * 1.2f * fs.turn - rateRoll) * k;
     shipB.yaw(rateYaw * dt);
     shipB.pitch(ratePitch * dt);
     shipB.roll(rateRoll * dt);
@@ -2924,7 +3264,8 @@ static void updateWorld() {
   }
   if (shieldFx > 0.f) shieldFx -= dt;
   if (cloakT > 0.f) {
-    cloakT -= dt;
+    if (!flyingGhost()) cloakT -= dt;
+    else for (auto &o : objs) if (o.kind == K_SHIP && o.hostile && o.timer < 5.f) o.timer = 5.f;   // they never find the flagship
     hx::hum(hx::HUM_ENGINE, 0.06f, 2.f, 0.f);
     if (cloakT <= 0.f) { cloakT = 0.f; cloakCD = fmaxf(15.f, 45.f - 4.f * sm::capTier(sm::CAP_CLOAK)); setBanner("CLOAK DOWN", 1000); hx::pop(0.25f, 0.03f); }
   } else if (cloakCD > 0.f) cloakCD -= dt;
@@ -3045,9 +3386,10 @@ static void drawObjects() {
           uint16_t hull = shipLivery(o);
           if (!hull) hull = o.col;
           meshAmbient = 0.3f; meshDetail = 1;
-          if (o.ghost) { meshEmblem = 1; emblemArea = 0.f; decalSize = 0.f; }
+          if (o.ghost || o.uses == 1 + BR_DESERET) { meshEmblem = 1; emblemArea = 0.f; decalSize = 0.f; }
           drawMesh(o, meshes[o.mesh], o.radius, hull, o.ghost ? rgb(170, 190, 200) : shade(hull, 1.3f), true, outR);
           if (o.ghost && emblemArea > 90.f) drawDecal(LOGO_GHOSTFLEET, o.o.u);
+          if (o.uses == 1 + BR_DESERET && emblemArea > 90.f) drawDecal(LOGO_DESERET, o.o.u);
           meshAccent = meshCanopy = 0; meshAmbient = 0.16f; meshDetail = 0; meshEmblem = 0;
           if (outR > 2 && project(o.p - o.o.f * o.radius, sx, sy, z))   // engine glow
             cv.fillCircle((int)sx, (int)sy, (int)clampf(outR * 0.12f, 1, 4), o.ghost ? rgb(200, 255, 230) : o.hostile ? rgb(255, 120, 80) : rgb(140, 200, 255));
@@ -3141,10 +3483,32 @@ static void drawBoomsAndBolts() {
     cv.fillRect((int)x - 1, (int)y - 1, 3, 3, f.col);
     cv.drawPixel((int)x, (int)y, rgb(255, 230, 180));
   }
+  if (flyingHoney()) {   // limpet drones: circling the rock while it is cut, then hauling the pieces home
+    int dn = 0;
+    if (theater == TH_BEAM && theaterVerb == VB_MINE && theaterObj >= 0 && objs[theaterObj].kind == K_ROCK) {
+      const Obj &rk = objs[theaterObj];
+      for (int k = 0; k < 3; k++) {
+        float a = tNow * 2.2f + k * 2.094f;
+        V3 dp = rk.p + (shipB.r * cosf(a) + shipB.u * sinf(a) * 0.6f + shipB.f * sinf(a * 0.7f) * 0.4f) * (rk.radius * 1.7f);
+        float x, y, z, rx, ry, rz;
+        if (project(dp, x, y, z)) {
+          cv.fillRect((int)x - 1, (int)y - 1, 3, 3, rgb(122, 138, 78)); cv.drawPixel((int)x, (int)y, rgb(200, 255, 140));
+          if (project(rk.p, rx, ry, rz) && ((int)(tNow * 8.f + k) & 1)) cv.drawLine((int)x, (int)y, (int)rx, (int)ry, rgb(170, 230, 120));
+        }
+      }
+    }
+    for (auto &f : frags) {
+      if (!f.alive || f.t < 0.4f || dn >= 4) continue;
+      float x, y, z;
+      if (project(f.p + shipB.u * 0.6f, x, y, z)) { cv.fillRect((int)x - 1, (int)y - 2, 3, 3, rgb(122, 138, 78)); cv.drawPixel((int)x, (int)y - 1, rgb(200, 255, 140)); dn++; }
+    }
+  }
   if (shieldFx > 0.f) {   // the shield takes the hit: arcs flaring around the impact
     uint16_t sc = shieldTint();
     float k = shieldFx / 0.35f;
-    for (int r = 0; r < 3; r++) {
+    int rings = flyingFalcor() ? 5 : 3;
+    for (int r = 0; r < rings; r++) {
+      if (flyingFalcor()) sc = hsv(180.f + r * 28.f + tNow * 90.f, 0.45f, 1.f);
       int rad = (int)(14 + r * 9 + (1.f - k) * 22);
       for (int a = 0; a < 7; a++) {
         float ang = 3.6f + a * 0.32f + r * 0.11f;
@@ -3191,6 +3555,17 @@ static void drawEdgeArrow(const Obj &o, uint16_t col) {
 }
 
 static void drawTargeting() {
+  if (flyingMaltese()) {   // the Maltese's deterrent: pirates wear a soft red bracket (A targets them first)
+    for (auto &o : objs) {
+      if (o.kind != K_SHIP || !(o.hostile || o.enc == sm::ENC_PIRATE || o.enc == sm::ENC_SUBPIRATE)) continue;
+      float x, y, z;
+      if (!project(o.p, x, y, z) || !onScreen(x, y)) continue;
+      int r = (int)clampf(o.radius * FOCAL / z * 1.6f, 6.f, 30.f), c = r / 2;
+      uint16_t col = rgb(200, 70, 60);
+      cv.drawLine((int)x - r, (int)y - r, (int)x - r + c, (int)y - r, col); cv.drawLine((int)x - r, (int)y - r, (int)x - r, (int)y - r + c, col);
+      cv.drawLine((int)x + r, (int)y + r, (int)x + r - c, (int)y + r, col); cv.drawLine((int)x + r, (int)y + r, (int)x + r, (int)y + r - c, col);
+    }
+  }
   chipN = 0;
   if (target < 0 || objs[target].kind == K_NONE) { target = -1; return; }
   Obj &o = objs[target];
@@ -3316,7 +3691,8 @@ static void drawHud() {
       int y = (int)fmodf(tNow * 90.f + i * 40.f, (float)H);
       cv.drawLine(0, y, 6, y + 8, cc); cv.drawLine(W - 1, H - y, W - 7, H - y - 8, cc);
     }
-    cv.setTextColor(cc); cv.setCursor(118, 56); cv.printf("CLOAKED %ds", (int)cloakT + 1);
+    cv.setTextColor(cc); cv.setCursor(118, 56);
+    if (flyingGhost()) cv.print("CLOAKED"); else cv.printf("CLOAKED %ds", (int)cloakT + 1);
   } else if (cloakCD > 0.f && sm::capTier(sm::CAP_CLOAK)) {
     cv.setTextColor(rgb(80, 110, 110)); cv.setCursor(124, 56); cv.printf("CLOAK %ds", (int)cloakCD + 1);
   }
@@ -3341,70 +3717,241 @@ static void drawHud() {
   else { cv.setTextColor(rgb(70, 95, 105)); cv.setCursor(14, 229); cv.print(target >= 0 ? "tap a verb   A: next target" : "tilt: aim   slide: yaw/roll   tap: target"); }
 }
 
+// a ship's side view: the Mantis is the original sprite; the others are indexed art.
+// scale 1 = full (156x83 box), 3 = a third (hangar thumbnails); centred in the box
+static void drawShipArt(uint8_t t, int x, int y, int scale) {
+  int bw = 156 / scale, bh = 83 / scale;
+  if (t == sm::SHIP_MANTIS) {
+    for (int j = 0; j < SHIP_ART_H; j += scale) for (int i = 0; i < SHIP_ART_W; i += scale) {
+      uint16_t c = SHIP_ART[j * SHIP_ART_W + i];
+      if (c) cv.drawPixel(x + (bw - SHIP_ART_W / scale) / 2 + i / scale, y + (bh - SHIP_ART_H / scale) / 2 + j / scale, c);
+    }
+    return;
+  }
+  const ShipArt *a = t == sm::SHIP_FALCOR ? &SHIP_FALCOR : t == sm::SHIP_HONEYBEE ? &SHIP_HONEYBEE : t == sm::SHIP_MALTESE ? &SHIP_MALTESE : &SHIP_GHOST;
+  int ox = x + (bw - a->w / scale) / 2, oy = y + (bh - a->h / scale) / 2;
+  for (int j = 0; j < a->h; j += scale) for (int i = 0; i < a->w; i += scale) {
+    uint8_t ix = a->px[j * a->w + i];
+    if (ix) cv.drawPixel(ox + i / scale, oy + j / scale, a->pal[ix]);
+  }
+}
+
+// The fitted equipment, mounted on the ship's picture: half size, accents in the ship's livery.
+static void drawMounts(uint8_t t, int x, int y) {
+  int w = SHIP_ART_W, h = SHIP_ART_H;
+  if (t != sm::SHIP_MANTIS) {
+    const ShipArt *a = t == sm::SHIP_FALCOR ? &SHIP_FALCOR : t == sm::SHIP_HONEYBEE ? &SHIP_HONEYBEE : t == sm::SHIP_MALTESE ? &SHIP_MALTESE : &SHIP_GHOST;
+    w = a->w; h = a->h;
+  }
+  int ox = x + (156 - w) / 2, oy = y + (83 - h) / 2;
+  static const uint16_t accent[sm::SHIP_COUNT] = {0, rgb(40, 190, 210), rgb(122, 138, 78), rgb(214, 160, 60), rgb(150, 80, 220)};
+  //                           weapons  shields mining  scanners trailer stabilz bulkhd  cloak  fuel
+  static const float fx[9] = {0.80f, 0.50f, 0.93f, 0.30f, 0.10f, 0.03f, 0.f, 0.62f, 0.42f};
+  static const float fy[9] = {0.72f, 0.04f, 0.86f, 0.02f, 0.86f, 0.25f, 0.f, 0.50f, 0.90f};
+  for (int cap = 0; cap < sm::CAP_COUNT && cap < 9; cap++) {
+    uint8_t mk = sm::capTier((sm::CapId)cap);
+    if (!mk || cap == sm::CAP_BULKHEADS) continue;   // bulkheads are inside the hull
+    const EquipArt &a = EQUIP[cap][equipStep(mk)];
+    uint16_t pal[16];
+    for (int i = 0; i < 16; i++) {
+      pal[i] = a.pal[i];
+      if (!accent[t]) continue;
+      int r, g, b; unrgb(a.pal[i], r, g, b);
+      int mx = r > g ? (r > b ? r : b) : (g > b ? g : b), mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+      if (mx > 90 && mx - mn > 60 && r >= g && g > b) pal[i] = shade(accent[t], mx / 255.f * 1.1f);   // orange accents take the livery
+    }
+    int cx = ox + (int)(fx[cap] * w) - 12, cy = oy + (int)(fy[cap] * h) - 8;
+    for (int j = 0; j < EQUIP_H; j += 2) for (int i = 0; i < EQUIP_W; i += 2) {
+      uint8_t bb = a.px[(j * EQUIP_W + i) >> 1]; uint8_t ix = bb >> 4;
+      int px = cx + i / 2, py = cy + j / 2;
+      if (ix && px >= x && px < x + 156 && py >= y && py < y + 83) cv.drawPixel(px, py, pal[ix]);
+    }
+  }
+}
+
+static void drawEquip(int x, int y, uint8_t cap, uint8_t mark, bool dim) {
+  const EquipArt &a = EQUIP[cap < 9 ? cap : 0][equipStep(mark)];
+  for (int j = 0; j < EQUIP_H; j++)
+    for (int i = 0; i < EQUIP_W; i++) {
+      uint8_t b = a.px[(j * EQUIP_W + i) >> 1];
+      uint8_t ix = (i & 1) ? (b & 15) : (b >> 4);
+      if (ix) cv.drawPixel(x + i, y + j, dim ? shade(a.pal[ix], 0.45f) : a.pal[ix]);
+    }
+}
+
+// The docking screen: a page on the left, the services down the right edge.
 static void drawStation() {
   sm::Contract &off = sm::contractOfferPeek();
   sm::Contract &c = sm::contract();
   sm::Pilot &p = sm::sheet();
-  cv.fillRect(8, 4, 304, 206, rgb(5, 10, 16));
-  cv.drawRoundRect(8, 4, 304, 206, 8, rgb(70, 150, 255));
-  const Obj *stn = stationIdx >= 0 && objs[stationIdx].kind == K_STATION ? &objs[stationIdx] : nullptr;
+  const Obj *stn = dockedStation();
   uint8_t br = stn ? stn->uses : (uint8_t)BR_LIMINAR;
   const BrandLook &bl = brandLook(br);
+  cv.fillRect(6, 4, 262, 206, rgb(5, 10, 16));
+  cv.drawRoundRect(6, 4, 262, 206, 8, bl.accent == rgb(46, 74, 132) ? rgb(90, 130, 200) : bl.accent);
+  // header: maker, kind, the ship's numbers
   static const int8_t brandLogo[5] = {LOGO_LIMINAR, -1, LOGO_MALTAPLEX, LOGO_DESERET, LOGO_FREEHOLD};
-  int lg = br < 5 ? brandLogo[br] : -1;
-  int tx = 18;
-  if (lg >= 0) { drawLogoFlat(14, 7, lg); tx = 44; }
-  cv.setTextSize(2); cv.setTextColor(bl.light); cv.setCursor(tx, 8); cv.print(bl.name); cv.setTextSize(1);
+  int lg = br < 5 ? brandLogo[br] : -1, tx = 14;
+  if (lg >= 0) { drawLogoFlat(12, 8, lg); tx = 40; }
+  cv.setTextSize(2); cv.setTextColor(bl.light); cv.setCursor(tx, 9); cv.print(bl.name); cv.setTextSize(1);
   const char *kind = stn ? strchr(stn->name, ' ') : nullptr;
-  cv.setTextColor(rgb(120, 134, 150)); cv.setCursor(tx, 25); cv.print(stn && strncmp(stn->name, "DEEP", 4) == 0 ? "DEEP OUTPOST" : (kind ? kind + 1 : "STATION"));
-  cv.setTextColor(rgb(140, 150, 165)); cv.setCursor(176, 10); cv.printf("$%ld  H%d/%d", (long)p.credits, p.hull, p.hullMax);
-  cv.setCursor(176, 20); cv.printf("F%d/%d  hold %u/%u", p.fuel, p.fuelCap, p.holdUsed, p.holdCap);
-  char mood[48]; strncpy(mood, stationMoodText, 46); mood[46] = 0;
-  cv.setTextColor(rgb(110, 125, 140)); cv.setCursor(18, 35); cv.print(mood);
-
-  char rows[STATION_ROWS][56];
-  int rc = refuelCost();
-  if (rc > 0) snprintf(rows[0], 56, "REFUEL / REPAIR   %dcr", rc); else snprintf(rows[0], 56, "REFUEL / REPAIR   topped up");
-  bool dueHere = dueHereNow();
-  if (dueHere) snprintf(rows[1], 56, "DELIVER: %s  +%dcr", c.title, c.pay);
-  else if (c.live) snprintf(rows[1], 56, "DROP LEAD: %s", c.title);
-  else snprintf(rows[1], 56, "WORK: %s  +%dcr", off.title, off.pay);
-  if (layer > 0) snprintf(rows[2], 56, "RUMORS: nobody sells names here");
-  else snprintf(rows[2], 56, "BUY A RUMOR   %dcr", rumorPrice());
-  int sell = sellableValue(false);
-  if (sell > 0) snprintf(rows[3], 56, "SELL HAUL   +%dcr", sell);
-  else {
-    char cn[16]; snprintf(cn, sizeof(cn), "%s", sm::capName((sm::CapId)gearCap)); upcase(cn);
-    snprintf(rows[3], 56, "BUY %s %u   %dcr", cn, sm::capTier((sm::CapId)gearCap) + 1, gearPrice());
-  }
-  if (opportunityTaken) snprintf(rows[4], 56, "BOARD: (taken)"); else snprintf(rows[4], 56, "BOARD: %s +%d", stationOpportunity.title, stationOpportunity.reward);
-  snprintf(rows[5], 56, "LAUNCH");
-  for (int i = 0; i < STATION_ROWS; ++i) {
-    int y = ROW_Y0 + i * ROW_PITCH; bool sel = i == stationChoice;
-    cv.fillRoundRect(18, y, 284, ROW_H, 4, sel ? rgb(25, 90, 90) : rgb(16, 24, 32));
-    cv.setTextColor(i == 1 && dueHere ? rgb(255, 215, 110) : sel ? rgb(120, 255, 210) : rgb(180, 190, 200));
-    cv.setCursor(28, y + 6); cv.print(rows[i]);
+  cv.setTextColor(rgb(120, 134, 150)); cv.setCursor(tx, 26); cv.print(stn && strncmp(stn->name, "DEEP", 4) == 0 ? "DEEP OUTPOST" : (kind ? kind + 1 : "STATION"));
+  cv.setTextColor(rgb(150, 160, 172)); cv.setCursor(12, 37);
+  cv.printf("$%ld  H%d/%d  F%d/%d  HOLD %u/%u", (long)p.credits, p.hull, p.hullMax, p.fuel, p.fuelCap, p.holdUsed, p.holdCap);
+  // services
+  static const char *svc[3] = {"BOARD", "HANGAR", "MARKET"};
+  for (int i = 0; i < 3; i++) {
+    bool on = stationPage == i;
+    cv.fillRoundRect(SVC_X, SVC_Y[i], SVC_W, SVC_H, 6, on ? shade(bl.accent, 0.55f) : rgb(14, 20, 28));
+    cv.drawRoundRect(SVC_X, SVC_Y[i], SVC_W, SVC_H, 6, on ? bl.light : rgb(50, 60, 72));
+    int cx = SVC_X + SVC_W / 2, cy = SVC_Y[i] + 22;
+    uint16_t ic = on ? rgb(240, 245, 250) : rgb(130, 140, 150);
+    if (i == 0) { for (int k = 0; k < 3; k++) cv.fillRect(cx - 10, cy - 8 + k * 6, 20, 3, ic); }                    // a list
+    else if (i == 1) {                                                                                             // a turret, half size
+      const EquipArt &a = EQUIP[sm::CAP_WEAPONS][0];
+      for (int j = 0; j < EQUIP_H; j += 2) for (int k2 = 0; k2 < EQUIP_W; k2 += 2) {
+        uint8_t b = a.px[(j * EQUIP_W + k2) >> 1]; uint8_t ix = b >> 4;
+        if (ix) cv.drawPixel(cx - 12 + k2 / 2, cy - 9 + j / 2, on ? a.pal[ix] : shade(a.pal[ix], 0.55f));
+      }
+    }
+    else { cv.drawLine(cx - 11, cy + 6, cx - 4, cy - 2, ic); cv.drawLine(cx - 4, cy - 2, cx + 2, cy + 2, ic); cv.drawLine(cx + 2, cy + 2, cx + 11, cy - 8, ic); }   // a price line
+    cv.setTextColor(on ? rgb(255, 255, 255) : rgb(140, 150, 160));
+    cv.setCursor(cx - (int)strlen(svc[i]) * 3, SVC_Y[i] + SVC_H - 14); cv.print(svc[i]);
   }
   char dbuf[112] = "";
-  switch (stationChoice) {
-    case 0: snprintf(dbuf, sizeof(dbuf), "fuel %dcr/u  hull %dcr/u. you stay docked.", sm::fuelPrice(), sm::repairPrice()); break;
-    case 1: {
-      if (dueHere) { snprintf(dbuf, sizeof(dbuf), "the cargo is expected here. hand it over and get paid."); break; }
-      const sm::Contract &j = c.live ? c : off;
-      if (j.dest[0]) snprintf(dbuf, sizeof(dbuf), "to %s, depth %u. taking it sets your course.", j.dest, j.destDepth);
-      else snprintf(dbuf, sizeof(dbuf), "%s", sm::contractHint(j));
-      break;
+  if (stationPage == 0) {
+    // ---------------- the board ----------------
+    char rows[STATION_ROWS][44];
+    int rc = refuelCost();
+    if (rc > 0) snprintf(rows[0], 44, "REFUEL / REPAIR  %dcr", rc); else snprintf(rows[0], 44, "REFUEL / REPAIR  topped up");
+    bool dueHere = dueHereNow();
+    if (dueHere) snprintf(rows[1], 44, "DELIVER: %s +%d", c.title, c.pay);
+    else if (c.live) snprintf(rows[1], 44, "DROP LEAD: %s", c.title);
+    else snprintf(rows[1], 44, "WORK: %s +%d", off.title, off.pay);
+    if (layer > 0) snprintf(rows[2], 44, "RUMORS: nobody sells names");
+    else snprintf(rows[2], 44, "BUY A RUMOR  %dcr", rumorPrice());
+    int sell = sellableValue(false);
+    if (sell > 0) snprintf(rows[3], 44, "SELL ALL HAUL  +%dcr", sell); else snprintf(rows[3], 44, "HOLD EMPTY - SEE MARKET");
+    if (opportunityTaken) snprintf(rows[4], 44, "BOARD: (taken)"); else snprintf(rows[4], 44, "BOARD: %s +%d", stationOpportunity.title, stationOpportunity.reward);
+    snprintf(rows[5], 44, "LAUNCH");
+    for (int i = 0; i < STATION_ROWS; ++i) {
+      int y = ROW_Y0 + i * ROW_PITCH; bool sel = i == stationChoice;
+      cv.fillRoundRect(12, y, 250, ROW_H, 4, sel ? rgb(25, 90, 90) : rgb(16, 24, 32));
+      cv.setTextColor(i == 1 && dueHere ? rgb(255, 215, 110) : sel ? rgb(120, 255, 210) : rgb(180, 190, 200));
+      cv.setCursor(20, y + 6); cv.print(rows[i]);
     }
-    case 2: snprintf(dbuf, sizeof(dbuf), "a place you haven't heard of. buying it sets your course."); break;
-    case 3: snprintf(dbuf, sizeof(dbuf), "%s", layer > 0 ? "rock and ore fetch double down here. they buy deep scans."
-                                                  : sell > 0 ? "hold lines your lead doesn't own" : "earned capability is equipped at once"); break;
-    case 4: asciiCopy(dbuf, sizeof(dbuf), opportunityTaken ? "" : stationOpportunity.detail); break;
-    case 5: snprintf(dbuf, sizeof(dbuf), "back out among the gates"); break;
+    switch (stationChoice) {
+      case 0: asciiCopy(dbuf, sizeof(dbuf), stationMoodText); break;
+      case 1: {
+        if (dueHere) { snprintf(dbuf, sizeof(dbuf), "the cargo is expected here. hand it over."); break; }
+        const sm::Contract &j = c.live ? c : off;
+        if (j.dest[0]) snprintf(dbuf, sizeof(dbuf), "to %s, depth %u.", j.dest, j.destDepth);
+        else snprintf(dbuf, sizeof(dbuf), "%s", sm::contractHint(j));
+        break;
+      }
+      case 2: snprintf(dbuf, sizeof(dbuf), "a place you haven't heard of. sets your course."); break;
+      case 3: snprintf(dbuf, sizeof(dbuf), "%s", layer > 0 ? "rock and ore fetch double down here." : "everything your lead doesn't own."); break;
+      case 4: asciiCopy(dbuf, sizeof(dbuf), opportunityTaken ? "" : stationOpportunity.detail); break;
+      case 5: snprintf(dbuf, sizeof(dbuf), "back out among the gates"); break;
+    }
+  } else if (stationPage == 1) {
+    // ---------------- the hangar ----------------
+    static const char *tabs[2] = {"EQUIPMENT", "SHIPS"};
+    for (int t = 0; t < 2; t++) {
+      int x = 12 + t * 126; bool on = hangarTab == t;
+      cv.fillRoundRect(x, 47, 122, 14, 4, on ? shade(bl.accent, 0.5f) : rgb(14, 20, 28));
+      cv.setTextColor(on ? rgb(255, 255, 255) : rgb(130, 140, 150)); cv.setCursor(x + (122 - (int)strlen(tabs[t]) * 6) / 2, 50); cv.print(tabs[t]);
+    }
+    if (hangarTab == 1) {
+      // ---- ships: swap any you own, recover the lost, buy what this dock sells ----
+      for (int t = 0; t < sm::SHIP_COUNT; t++) {
+        const sm::ShipRecord &r = p.ships[t]; const sm::ShipSpec &sp = sm::shipSpec(t);
+        bool secret = t == sm::SHIP_GHOST && !r.owned;
+        int y = 64 + t * 25; bool sel = t == shipSel;
+        cv.fillRoundRect(10, y, 254, 23, 4, sel ? rgb(18, 40, 46) : rgb(12, 18, 26));
+        if (!secret) drawShipArt((uint8_t)t, 12, y - 3, 3);
+        cv.setTextColor(secret ? rgb(90, 80, 110) : sel ? rgb(120, 255, 210) : rgb(220, 226, 232));
+        cv.setCursor(68, y + 3); cv.print(secret ? "???" : sp.name);
+        cv.setTextColor(rgb(110, 124, 134)); cv.setCursor(68, y + 13); cv.print(secret ? "rumoured. not for sale." : sp.maker);
+        char act[24]; uint16_t ac = rgb(180, 190, 200);
+        if (t == p.activeShip) { snprintf(act, sizeof(act), "ACTIVE"); ac = rgb(150, 225, 30); }
+        else if (r.owned && r.lost) { snprintf(act, sizeof(act), "REBUILD %ld", (long)sm::shipRecoverFee((uint8_t)t)); ac = rgb(255, 160, 90); }
+        else if (r.owned) { snprintf(act, sizeof(act), "SWAP"); ac = rgb(120, 220, 255); }
+        else if (secret) snprintf(act, sizeof(act), " ");
+        else if (shipSoldHere((uint8_t)t)) { snprintf(act, sizeof(act), "BUY %ld", (long)sp.price); ac = p.credits >= sp.price ? rgb(255, 215, 110) : rgb(200, 90, 80); }
+        else snprintf(act, sizeof(act), "NOT SOLD HERE");
+        cv.setTextColor(ac); cv.setCursor(260 - (int)strlen(act) * 6, y + 8); cv.print(act);
+      }
+      const sm::ShipSpec &sp = sm::shipSpec(shipSel);
+      if (shipSel == sm::SHIP_GHOST && !p.ships[shipSel].owned) snprintf(dbuf, sizeof(dbuf), "the ghost fleet keeps it for those who bring them what they want.");
+      else snprintf(dbuf, sizeof(dbuf), "%s. speed x%.2f  turn x%.2f  hold %u.", sp.role, sp.speed, sp.turn, sp.holdBase);
+    } else {
+    if (!hangarN) snprintf(dbuf, sizeof(dbuf), "nothing on the racks today.");
+    for (int i = 0; i < hangarN; i++) {
+      const HangarOffer &h = hangar[i];
+      int x = 12 + i * 84, y = 64, w = 80, hh = 124;
+      bool sel = i == hangarSel, owned = h.fitted || sm::capTier((sm::CapId)h.cap) >= h.mark;
+      cv.fillRoundRect(x, y, w, hh, 5, sel ? rgb(18, 40, 46) : rgb(12, 18, 26));
+      cv.drawRoundRect(x, y, w, hh, 5, sel ? bl.light : rgb(48, 58, 70));
+      drawEquip(x + (w - EQUIP_W) / 2, y + 6, h.cap, h.mark, owned);
+      const char *nm = equipName(h.cap, h.mark);
+      char l1[16], l2[16]; l1[0] = l2[0] = 0;
+      const char *sp = strlen(nm) > 13 ? strrchr(nm, ' ') : nullptr;
+      if (sp) { snprintf(l1, sizeof(l1), "%.*s", (int)(sp - nm), nm); snprintf(l2, sizeof(l2), "%s", sp + 1); } else snprintf(l1, sizeof(l1), "%s", nm);
+      cv.setTextColor(owned ? rgb(110, 120, 130) : rgb(225, 230, 235));
+      cv.setCursor(x + (w - (int)strlen(l1) * 6) / 2, y + 42); cv.print(l1);
+      cv.setCursor(x + (w - (int)strlen(l2) * 6) / 2, y + 51); cv.print(l2);
+      cv.setTextSize(2); cv.setTextColor(owned ? rgb(90, 100, 110) : bl.light);
+      char mk[8]; snprintf(mk, sizeof(mk), "MK%u", h.mark);
+      cv.setCursor(x + (w - (int)strlen(mk) * 12) / 2, y + 62); cv.print(mk); cv.setTextSize(1);
+      char eff[24]; equipEffect(h.cap, h.mark, eff, sizeof(eff));
+      cv.setTextColor(owned ? rgb(90, 100, 110) : rgb(150, 220, 200));
+      printWrapped(x + 4, y + 82, 12, 2, 10, eff);
+      cv.setTextColor(owned ? rgb(90, 160, 110) : (p.credits >= h.price ? rgb(255, 215, 110) : rgb(200, 90, 80)));
+      char pr[16]; if (owned) snprintf(pr, sizeof(pr), "FITTED"); else snprintf(pr, sizeof(pr), "%dcr", h.price);
+      cv.setCursor(x + (w - (int)strlen(pr) * 6) / 2, y + hh - 14); cv.print(pr);
+    }
+    if (hangarSel < hangarN) {
+      const HangarOffer &h = hangar[hangarSel];
+      char cn[16]; snprintf(cn, sizeof(cn), "%s", sm::capName((sm::CapId)h.cap)); upcase(cn);
+      snprintf(dbuf, sizeof(dbuf), "%s: fitted MK%u. tap again to fit MK%u.", cn, sm::capTier((sm::CapId)h.cap), h.mark);
+    }
+    }
+  } else {
+    // ---------------- the market ----------------
+    cv.setTextColor(rgb(110, 124, 134)); cv.setCursor(30, 49); cv.print("GOOD           BUY  SELL  HOLD");
+    for (int g = 0; g < sm::G_COUNT; g++) {
+      int y = 60 + g * 15; bool sel = g == marketSel, trades = sm::marketTrades((sm::Good)g);
+      if (sel) cv.fillRect(10, y - 2, 254, 13, rgb(20, 60, 66));
+      cv.setTextColor(!trades ? rgb(70, 76, 84) : sel ? rgb(120, 255, 210) : rgb(200, 206, 212));
+      for (int j = 0; j < 14; j++) for (int i = 0; i < 14; i++) { uint16_t ic = GOOD_ICONS[g][j * 14 + i]; if (ic) cv.drawPixel(12 + i, y - 3 + j, trades ? ic : shade(ic, 0.4f)); }
+      cv.setCursor(30, y); cv.print(sm::goodName((sm::Good)g));
+      int8_t mood = sm::marketMood((sm::Good)g);
+      if (trades) {
+        cv.setTextColor(mood < 0 ? rgb(130, 230, 150) : rgb(200, 206, 212)); cv.setCursor(116, y); cv.printf("%4d", sm::marketBuy((sm::Good)g));
+        cv.setTextColor(mood > 0 ? rgb(255, 210, 110) : rgb(200, 206, 212)); cv.setCursor(152, y); cv.printf("%4d", sm::marketSell((sm::Good)g));
+      } else { cv.setCursor(128, y); cv.print("--    --"); }
+      int have = sm::haulCount(sm::goodHold((sm::Good)g));
+      cv.setTextColor(have ? rgb(220, 226, 232) : rgb(70, 76, 84)); cv.setCursor(194, y); cv.printf("%3d", have);
+      if (mood > 0 && trades) { cv.setTextColor(rgb(255, 210, 110)); cv.setCursor(222, y); cv.print("NEED"); }
+      else if (mood < 0 && trades) { cv.setTextColor(rgb(130, 230, 150)); cv.setCursor(222, y); cv.print("MAKE"); }
+    }
+    static const char *chip[4] = {"BUY 1", "BUY 5", "SELL 1", "SELL ALL"};
+    for (int i = 0; i < 4; i++) {
+      int x = 12 + i * 63;
+      cv.fillRoundRect(x, 182, 59, 18, 4, i < 2 ? rgb(20, 56, 40) : rgb(60, 40, 18));
+      cv.drawRoundRect(x, 182, 59, 18, 4, i < 2 ? rgb(90, 200, 130) : rgb(230, 170, 70));
+      cv.setTextColor(rgb(235, 240, 240)); cv.setCursor(x + (59 - (int)strlen(chip[i]) * 6) / 2, 187); cv.print(chip[i]);
+    }
+    snprintf(dbuf, sizeof(dbuf), "%s", layer > 0 ? "deep prices: rock and scans sell best" : "MAKE: cheap here  NEED: premium");
   }
   cv.setTextColor(rgb(200, 180, 110));
-  printWrapped(18, ROW_Y0 + STATION_ROWS * ROW_PITCH + 2, 46, 2, 10, dbuf);
+  printWrapped(12, stationPage == 2 ? 202 : ROW_Y0 + STATION_ROWS * ROW_PITCH + 2, 42, stationPage == 2 ? 1 : 2, 10, dbuf);
   if (bannerUntil > millis()) drawBanner();
-  else { cv.setTextColor(rgb(70, 95, 105)); cv.setCursor(6, 229); cv.print("tap row, tap again   A launch  C next"); }
+  else {
+    static const char *hint[3] = {"tap row, tap again   A launch  C next", "tap a card, tap again to fit   A launch", "tap a good, then a button   A launch"};
+    cv.setTextColor(rgb(70, 95, 105)); cv.setCursor(6, 229); cv.print(hint[stationPage]);
+  }
 }
 
 static void drawDockSequence() {
@@ -3577,11 +4124,17 @@ static void drawStatus() {
   cv.fillRoundRect(3, 112, 314, 125, 6, rgb(8, 6, 14));
   cv.drawRoundRect(3, 112, 314, 125, 6, MAG_L);
   cv.fillRect(4, 113, 312, 12, TEAL_D);
-  cv.setTextColor(TEAL_L); cv.setCursor(9, 115); cv.print("SHIP DIAGNOSTIC - THIS HULL");
-  cv.setTextColor(DIM); cv.setCursor(230, 115); cv.print("RESETS ON LOSS");
+  cv.setTextColor(TEAL_L); cv.setCursor(9, 115); cv.printf("SHIP DIAGNOSTIC - %s", flying().name);
+  {   // what happens to this hull if it is lost
+    const sm::Pilot &pp = sm::sheet();
+    bool lic = pp.activeShip == sm::SHIP_MANTIS, rec = pp.ships[pp.activeShip].backup;
+    const char *t = lic ? "LICENSE SHIP" : rec ? "ON RECORD" : "NO RECORD";
+    cv.setTextColor(lic || rec ? DIM : rgb(255, 120, 90)); cv.setCursor(314 - (int)strlen(t) * 6, 115); cv.print(t);
+  }
   for (int gx = 8; gx < 170; gx += 12) cv.drawLine(gx, 128, gx, 222, rgb(16, 22, 30));
   for (int gy = 128; gy < 224; gy += 12) cv.drawLine(8, gy, 170, gy, rgb(16, 22, 30));
-  drawSprite565(SHIP_ART, SHIP_ART_W, SHIP_ART_H, 10, 134);
+  drawShipArt(sm::sheet().activeShip, 10, 134, 1);
+  drawMounts(sm::sheet().activeShip, 10, 134);
   int X = 176;
   struct G { const char *l; int v, mx; uint16_t c; } gs[] = {
     {"HULL", p.hull, p.hullMax, TEAL_L}, {"FUEL", p.fuel, p.fuelCap, LIME}, {"HOLD", p.holdUsed, p.holdCap, MAG_L}};

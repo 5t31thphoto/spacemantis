@@ -27,7 +27,13 @@ void grantXp(CareerId id, uint16_t amount);
 uint8_t rankOf(CareerId id);
 
 // ---- capability (earned → equipped, no slots) ----
-void deriveFit();                           // hold / tank from the fit and ranks
+void deriveFit();
+int32_t shipRecoverFee(uint8_t t);
+uint8_t takeLostShip();          // 255 = none lost in the last pod launch
+bool shipSwap(uint8_t t);          // in a hangar; the hold must be empty (commodities do not survive the phase)
+bool shipBuy(uint8_t t);
+bool shipRecover(uint8_t t);
+void shipGrant(uint8_t t);                           // hold / tank from the fit and ranks
 void earnCap(CapId id, uint8_t tier);      // only raises tier, never manages slots
 uint8_t capTier(CapId id);
 
@@ -42,7 +48,9 @@ void coolHeat(uint8_t amount);             // global tick
 // ---- haul facts ----
 bool haulAdd(const char *what, uint16_t amount, bool legal);
 void haulClear();
-uint16_t haulRemove(const char *what);     // drop one named line; returns amount removed
+uint16_t haulRemove(const char *what);
+uint16_t haulTake(const char *what, uint16_t n);   // part of a line; returns units taken
+uint16_t haulCount(const char *what);     // drop one named line; returns amount removed
 uint16_t haulUsed();
 
 // ---- flags (emergent story) ----

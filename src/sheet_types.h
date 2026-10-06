@@ -110,6 +110,30 @@ struct Landmark {
 };
 
 // ---- pilot sheet (the soul) ----
+// The ships a pilot can own. The Mantis is the license ship: always yours, its fit survives the pod.
+enum ShipType : uint8_t { SHIP_MANTIS = 0, SHIP_FALCOR, SHIP_HONEYBEE, SHIP_MALTESE, SHIP_GHOST, SHIP_COUNT };
+struct ShipRecord {
+  uint8_t owned, lost, backup, pad;       // backup: the hangar teleporter has a record of it
+  uint8_t cap[CAP_COUNT];                 // its fit, while it sits in a hangar
+  uint8_t backupCap[CAP_COUNT];           // its fit, as last teleported (what a recovery restores)
+};
+struct ShipSpec {
+  const char *name, *maker, *role;
+  int32_t price;
+  uint8_t holdBase;
+  float speed, boost, turn, agility;      // cruise speed, top-end boost, turn rate, how quickly it answers
+  uint8_t deepCalm;                       // stabilizer ratings it adds in subspace
+};
+inline const ShipSpec &shipSpec(uint8_t t) {
+  static const ShipSpec S[SHIP_COUNT] = {
+    {"MANTIS",          "LIMINAR LICENSE", "ALL-ROUNDER",       0,     20, 1.00f, 1.0f, 1.00f, 1.0f, 0},
+    {"FALCOR",          "LIMINAR TRANSIT", "INTERCEPTOR",       6400,  10, 1.35f, 1.1f, 1.40f, 1.6f, 0},
+    {"HONEYBEE",        "DESERET",         "MINING RIG",        5200,  60, 0.88f, 0.9f, 0.90f, 0.9f, 0},
+    {"MALTESE",         "MALTAPLEX",       "LUXURY CRUISER",    9200,  32, 1.05f, 1.0f, 1.00f, 1.1f, 0},
+    {"GHOSTFLEET FLAGSHIP", "GHOSTFLEET",  "DEEP RUNNER",       0,     24, 1.00f, 2.6f, 1.10f, 1.3f, 1}};
+  return S[t < SHIP_COUNT ? t : 0];
+}
+
 struct Pilot {
   // identity / meta
   uint32_t lives;          // destructions survived
@@ -150,6 +174,10 @@ struct Pilot {
   NameTag  rumors[MAX_RUMORS];
   uint8_t  knownN;
   NameTag  known[MAX_KNOWN_GATES];
+
+  // the hangar: owned ships and which one is flying
+  uint8_t  activeShip;
+  ShipRecord ships[SHIP_COUNT];
 };
 
 // ---- derived queries (pure functions of Pilot) ----

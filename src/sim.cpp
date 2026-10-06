@@ -17,7 +17,8 @@ struct Commodity { const char *name; int base; uint8_t volatility; };
 static const Commodity COMMODITIES[] = {
   {"ore", 12, 5}, {"rock", 7, 3}, {"scrap", 18, 8},
   {"crate", 16, 7}, {"sealed tin", 34, 14}, {"relic", 72, 28},
-  {"spice", 29, 18}, {"water", 9, 4}, {"machine parts", 26, 11}
+  {"spice", 29, 18}, {"water", 9, 4}, {"machine parts", 26, 11},
+  {"rations", 10, 4}, {"alloys", 30, 9}, {"medicine", 42, 14}, {"electronics", 55, 16}
 };
 
 static const EncounterFlavor FLAVOR[ENC_COUNT][5] = {

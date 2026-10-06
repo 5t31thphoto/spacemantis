@@ -47,7 +47,10 @@ void M5Class::update() {
       if (n && c[0].enabled) { runVerb(c[0].id); objs[i].done = true; return; }
       if (distTo(objs[i]) < 400) { aimAt(objs[i].p); return; }
     }
-    aimAt(objs[navObj].p); return;
+    // line up on the ring's axis, then go through (a pilot doesn't aim at the centre from the side)
+    { Obj &g = objs[navObj]; V3 n = g.o.f, rel = shipPos - g.p; float ax = dot(rel, n), latd = len(rel - n * ax), sg = ax >= 0.f ? 1.f : -1.f, d = fabsf(ax);
+      aimAt((latd > d * 0.35f + 2.f && d > 12.f) ? g.p + n * (sg * clampf(d * 0.5f, 12.f, 70.f)) : g.p - n * (sg * 10.f)); }
+    return;
   }
   // pick something to do
   botGoalT -= 0.016f;

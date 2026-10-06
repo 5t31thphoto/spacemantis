@@ -3,9 +3,10 @@
 void M5Class::update() { g_ms += 8; BtnA.p=BtnB.p=BtnC.p=false; BtnA.click=BtnA.hold=BtnB.click=BtnB.hold=BtnC.click=BtnC.hold=false; Touch.d = TouchDetail{}; Imu.data.accel={0,0,1}; }
 int main() {
   setup(); bootOpen = false;
-  static const char *names[] = {"HEXCORE", "RING", "SPINDLE", "OUTPOST"};
+  static const char *names[] = {"HEXCORE", "RING", "SPINDLE", "OUTPOST", "", "HABITAT"};
+  static const int styles[] = {0, 1, 2, 3, 5};
   int allOk = 1;
-  for (int style = 0; style < 4; style++) {
+  for (int si = 0; si < 5; si++) { int style = styles[si];
     int ok = 0, n = 30, scrapes = 0; float worst = 0;
     for (int k = 0; k < n; k++) {
       stationOpen = false; dockAnim = 0; theater = TH_NONE;

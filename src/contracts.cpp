@@ -20,6 +20,7 @@ char s_here[NAME_LEN] = "";   // where the pilot is now: never a destination
 struct LaneCand { char name[NAME_LEN]; uint8_t depth, visited; };
 LaneCand s_lanes[8];          // gates in this system a job may point at
 uint8_t s_band = 0;           // the layer the pilot is in
+uint8_t s_issuer = 0;         // the dock posting the work
 int s_laneN = 0;
 
 const char *kindTitle(ContractKind k) {
@@ -78,6 +79,12 @@ bool roll(Contract &o, ContractKind k) {
   }
   o.kind = k;
   strncpy(o.title, kindTitle(k), sizeof(o.title) - 1);
+  o.issuer = s_issuer;
+  if (s_issuer == 3) {   // Deseret: the work is the colony's
+    const char *t = k == CK_SUPPLY ? "COLONY SUPPLY" : k == CK_HAUL ? "SETTLER FREIGHT" : k == CK_SURVEY ? "FRONTIER SURVEY"
+                  : k == CK_TOUR ? "PIONEER ROUTE" : k == CK_RESCUE ? "LOST SETTLERS" : k == CK_DEPTHRUN ? "DEEP ACRE" : nullptr;
+    if (t) { strncpy(o.title, t, sizeof(o.title) - 1); o.title[sizeof(o.title) - 1] = 0; }
+  }
 
   if (hasDest(k)) {
     // A job never makes a gate: it points at one already in this system,
@@ -126,6 +133,10 @@ bool roll(Contract &o, ContractKind k) {
 
 void complete() {
   if (!s_c.live) return;
+  if (s_c.issuer == 3) {   // standing with Deseret survives the pod
+    int8_t d = flagGet("deseret");
+    flagSet("deseret", (int8_t)(d < 120 ? d + 1 : 120), true);
+  }
   addCredits(s_c.pay);
   grantXp(s_c.track, s_c.xp);
   int8_t done = flagGet("job_done");
@@ -170,6 +181,7 @@ bool contractOffer(ContractKind prefer) {
 }
 
 void contractSetBand(uint8_t band) { s_band = band; }
+void contractSetIssuer(uint8_t brand) { s_issuer = brand; }
 bool contractOfferDeep() { return roll(s_offer, (urand() & 1u) ? CK_DEEPRESCUE : CK_DEEPSCAN); }
 
 void contractSetLanes(const char *const *names, const uint8_t *depths, const uint8_t *visited, int n) {
