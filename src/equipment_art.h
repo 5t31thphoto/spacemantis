@@ -5,7 +5,7 @@
 // EQUIP[cap][art] for CapId order; 4 art steps per capability, chosen by mark.
 static const int EQUIP_W = 48, EQUIP_H = 34;
 struct EquipArt { uint16_t pal[16]; uint8_t px[48 * 34 / 2]; };
-static const EquipArt EQUIP[9][4] = {
+static const EquipArt EQUIP[9][4] PROGMEM = {
   {  // weapons
     {{0x0000, 0xDEB8, 0xCE36, 0xB574, 0xA553, 0x9CD1, 0x9C2E, 0x73CF, 0x6B2C, 0x62CA, 0x4A8A, 0x4249, 0x39C7, 0x2104, 0x0000, 0x0000},
      {
