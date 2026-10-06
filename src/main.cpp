@@ -33,6 +33,7 @@
 #include "market.h"
 #include "ships_art.h"
 #include "goods_art.h"
+#include "signals.h"
 #include "trip.h"
 #include "sheet.h"
 #include "universe.h"
@@ -317,9 +318,12 @@ struct Obj {
   int lmId;       // landmark id (0 = none)
   int link;       // station <-> dock gate
   char name[24];
+  uint16_t net;   // signals: shared object id (0 = local only)
+  bool remote;    // signals: the other pilot
 };
 static constexpr int MAX_OBJ = 44;
 static Obj objs[MAX_OBJ];
+static void drawRemoteShip(const Obj &o);
 
 static Obj *newObj(uint8_t kind) {
   for (int i = 0; i < MAX_OBJ; i++)
@@ -332,7 +336,37 @@ static Obj *newObj(uint8_t kind) {
   return nullptr;
 }
 static int idxOf(const Obj *o) { return o ? (int)(o - objs) : -1; }
-static void killObj(int i) { if (i >= 0 && i < MAX_OBJ) objs[i].kind = K_NONE; }
+// ---- signals (experimental multiplayer) ----
+static bool inMeeting = false, netEcho = false;
+static char meetOrigin[24] = "";              // where each pilot came from (their way home)
+static int remoteIdx = -1;
+static uint16_t netNextId = 1;
+static bool itMe = false;                      // tag: who is "it"
+static int tagsGiven = 0, tagsTaken = 0, tagHits = 0;
+static float netSendT = 0, npcSyncT = 0;
+static bool signalsOn();
+static void netTick();
+static void leaveMeeting(bool sayBye);
+static void makeMeetingScene(uint32_t seed);
+static int signalsFee();
+static const char *myCallsign();
+static void chatTap(int x, int y);
+static void chatSend(const char *t);
+static void drawChat();
+static float glitchT = 0.f;               // the haywire arrival
+static bool chatOpen = false;
+static char chatLog[5][56]; static int chatLogN = 0;
+static char chatDraft[44] = "";
+static void chatLogAdd(const char *t) {
+  if (chatLogN == 5) { for (int i = 1; i < 5; i++) memcpy(chatLog[i - 1], chatLog[i], 56); chatLogN = 4; }
+  strncpy(chatLog[chatLogN], t, 55); chatLog[chatLogN][55] = 0; chatLogN++;
+}
+static void killObj(int i) {
+  if (i < 0 || i >= MAX_OBJ) return;
+  if (inMeeting && objs[i].net && !objs[i].remote && !netEcho) net::sendRemove(objs[i].net);   // the other sky loses it too
+  if (i == remoteIdx) remoteIdx = -1;
+  objs[i].kind = K_NONE;
+}
 static inline uint8_t flyingType() { return sm::sheet().activeShip; }
 static inline bool flyingFalcor() { return flyingType() == sm::SHIP_FALCOR; }
 static inline bool flyingHoney() { return flyingType() == sm::SHIP_HONEYBEE; }
@@ -340,7 +374,7 @@ static inline bool flyingMaltese() { return flyingType() == sm::SHIP_MALTESE; }
 static inline bool flyingGhost() { return flyingType() == sm::SHIP_GHOST; }
 static int autoNavObj = -1, orbitObj = -1;   // Maltese: gate autonav, gas giant orbit
 static bool autoNav = false;
-static void clearWorld() { for (auto &o : objs) o.kind = K_NONE; autoNavObj = -1; orbitObj = -1; }
+static void clearWorld() { for (auto &o : objs) o.kind = K_NONE; autoNavObj = -1; orbitObj = -1; remoteIdx = -1; }
 static int countKind(uint8_t k) { int n = 0; for (auto &o : objs) if (o.kind == k) n++; return n; }
 static float distTo(const Obj &o) { return len(o.p - shipPos); }
 static float surfaceDist(const Obj &o) { return distTo(o) - o.radius; }
@@ -1262,7 +1296,8 @@ static bool lostOpen = false;
 static bool bootOpen = true;  // title card until first tap
 static bool statusOpen = false;  // long-press C: pilot license + ship diagnostic (visual reference only)
 static uint8_t statusPage = 0;   // 0 license + diagnostic, 1 journal + active lead (hold C)
-static float newGameHold = 0, newGameDone = 0;   // splash: hold A + C
+static float newGameHold = 0, newGameDone = 0;   // splash: hold B + C
+static float signalsHold = 0, signalsDone = 0;   // splash: hold A + C (experimental Signals)
 static float cloakT = 0.f, cloakCD = 0.f;          // hold B: cloak (duration and cooldown grow with the mark)
 // Something in the deep, below the roads. Rare; no damage; you never see it clearly.
 struct AlienEncounter { bool active; uint8_t cls, outcome; float t, beatA, beatB, beatC; V3 p; bool applied; };
@@ -1293,6 +1328,7 @@ static void showRecognition(const sm::Landmark *lm) {
 static bool dueHereNow() { return layer == 0 && sm::contractDueHere(hereName); }   // deliveries are paid at surface docks
 
 static uint16_t gateColor(const Obj &g) {
+  if (g.kind == K_GATE && g.uses == 2) return rgb(230, 60, 230);   // a commissioned signal gate
   if (g.kind == K_DOCKGATE) return dueHereNow() ? rgb(240, 200, 90) : rgb(70, 150, 255);
   if (g.gflags & GF_JOB) return rgb(240, 200, 90);
   if (g.gflags & GF_FIXED) return rgb(185, 160, 255);        // charted deep landmark: lilac, never job-gold
@@ -1630,6 +1666,11 @@ static void makeLayerScene() {
         if (tp.active && !tp.fixedPoint && !tp.via[0]) asciiCopy(tp.via, sizeof(tp.via), lm->name);   // you passed it
       }
   if (layer == 4) rngState = keep ^ rnd();
+  if (sm::trip().active && sm::trip().meeting && layer == 1) {
+    Obj *an = newObj(K_ANOMALY);
+    if (an) { an->p = aheadPoint(150.f, 40.f, 15.f); an->radius = 9.f; an->col = rgb(230, 60, 230); snprintf(an->name, sizeof(an->name), "EXPERIMENTAL WAKE"); }
+    setBanner("EXPERIMENTAL GATE TECH: A COMMISSIONED PORTAL IS FOLDING TWO SKIES TOGETHER", 3600);
+  } else
   if (layer == 1 && rf(0, 1) < 0.12f) {   // a Freehold outpost, clinging to the shallows
     V3 op = aheadPoint(rf(170, 230), (rf(0, 1) < 0.5f ? 1.f : -1.f) * rf(60, 110), rf(-30, 30));
     placeStation(op, norm(shipPos - op), makeLook(SS_OUTPOST, BR_FREEHOLD));
@@ -1653,6 +1694,7 @@ static void spawnContact() {
     int pick = (int)(rnd() % (uint32_t)sum), acc = 0;
     for (int i = 0; i < sm::ENC_COUNT; i++) { acc += w[i]; if (pick < acc) { kind = i; break; } }
   }
+  if (inMeeting && rf(0, 1) < 0.3f) kind = sm::ENC_PIRATE;   // the shared sky draws raiders: something to fight together
   if (flyingMaltese() && layer == 0 && !ghost) {   // a luxury hull draws eyes, more so with a full trailer
     const sm::Pilot &pp = sm::sheet();
     if (rf(0, 1) < 0.12f + (pp.holdUsed * 2 > pp.holdCap ? 0.1f : 0.f)) kind = sm::ENC_PIRATE;
@@ -1732,6 +1774,7 @@ static int verbsFor(const Obj &o, Chip *out) {
   float cut = 1.f + 0.12f * sm::capTier(sm::CAP_MINING);
   switch (o.kind) {
     case K_SHIP:
+      if (o.remote) { add(VB_HAIL, "HAIL", G, 600, nullptr); add(VB_ATTACK, "TAG", R, 160 * gun, nullptr); break; }   // the other pilot
       add(VB_HAIL, o.enc == sm::ENC_HOSTILE ? "SIGNAL" : "HAIL", G, 160 * reach, o.done ? "SILENT" : nullptr);
       add(VB_ATTACK, "ATTACK", R, 90 * gun, nullptr);
       break;
@@ -1821,6 +1864,13 @@ static void finishTheater() {
   theater = TH_NONE; theaterVerb = VB_NONE; theaterObj = -1;
   if (oi < 0 || objs[oi].kind == K_NONE) return;
   Obj &o = objs[oi];
+  if (o.remote) {   // tag: no resolve, no damage
+    char b[72];
+    if (tagHits > 0) { net::sendTag((uint8_t)tagHits); tagsGiven += tagHits; itMe = false; snprintf(b, sizeof(b), "TAGGED %s x%d - THEY'RE IT", o.name, tagHits); hx::swell(0.5f, 0.1f, 0.3f); }
+    else snprintf(b, sizeof(b), "MISSED - %s IS SLIPPERY", o.name);
+    setBanner(b, 1800); tagHits = 0;
+    return;
+  }
 
   if (verb == VB_CHART) {
     const sm::Landmark *lm = nullptr;
@@ -1900,10 +1950,12 @@ static void finishTheater() {
   setBanner(b, 3000);
 
   if (attack && out.destroyedOther) {
+    if (inMeeting && o.net) { net::sendKill(o.net); netEcho = true; }   // their screen loses it too, and it counts for their work
     addBoom(o.p, o.radius * 3.f, rgb(255, 170, 60));
     hx::boom(1.f);
     if (target == oi) target = -1;
     killObj(oi);
+    netEcho = false;
   } else {
     o.done = true; o.engaged = false; o.timer = 20.f;
     // a fight that doesn't end in fire usually ends in someone leaving
@@ -1955,6 +2007,8 @@ static void runVerb(uint8_t id) {
   }
   if (id == VB_AUTO) { autoNav = true; autoNavObj = target; orbitObj = -1; setBanner("AUTONAV - THREADING THE CHAIN", 1500); return; }
   if (id == VB_ORBIT) { orbitObj = target; autoNav = false; setBanner("ORBIT HELD - SETTLE IN", 1500); return; }
+  if (id == VB_HAIL && objs[target].remote) { chatOpen = true; return; }
+  if (id == VB_ATTACK && objs[target].remote) tagHits = 0;
   if (id == VB_HAIL) setBanner("OPENING COMM...", 900);
   if (id == VB_ATTACK && cloakT > 0.f && !flyingGhost()) { cloakT = 0.f; cloakCD = fmaxf(15.f, 45.f - 4.f * sm::capTier(sm::CAP_CLOAK)); setBanner("CLOAK DROPS AS THE GUNS FIRE", 1200); }
   beginTheater(target, id);
@@ -2010,6 +2064,11 @@ static void theaterTick() {
       }
       hx::pop(clampf(0.45f + w * 0.06f, 0.4f, 0.9f), 0.03f + w * 0.004f);
     }
+    if (theaterObj >= 0 && objs[theaterObj].remote) {   // tag: a hit only if you're on them
+      V3 to = objs[theaterObj].p - shipPos;
+      float off = acosf(clampf(dot(norm(to), shipB.f), -1.f, 1.f));
+      if (off < 0.14f) { tagHits++; addSparks(sx, sy, 10, rgb(255, 120, 230), 120); hx::pop(0.5f, 0.03f); }
+    } else
     if ((rnd() % 100) < (uint32_t)(50 + layer * 6)) {
       // incoming: the shields take it, and sometimes turn it away
       uint8_t sh = sm::capTier(sm::CAP_SHIELDS);
@@ -2250,6 +2309,11 @@ static void boardLanes() {
 static void openBoard() {
   stationOpen = true; stationChoice = 0;
   stationPage = 0; marketSel = 0; hangarTab = 0; shipSel = sm::sheet().activeShip;
+  if (inMeeting) {   // the meeting sky's board: work for two
+    sm::contractOffer(sm::CK_BOUNTY);
+    sm::Contract &o2 = sm::contractOfferPeek();
+    if (o2.kind == sm::CK_BOUNTY) { snprintf(o2.title, sizeof(o2.title), "PIRATE NEST (CO-OP)"); o2.need = 4; o2.pay = 640; }
+  }
   { const Obj *st = dockedStation(); sm::contractSetIssuer(st ? st->uses : 0); }
   setDockEcon();
   rollHangar();
@@ -2382,6 +2446,20 @@ static void stationCommit() {
 static void arriveReal(bool turnedBack) {
   sm::Trip tr = sm::trip();
   sm::tripEnd();
+  if (tr.meeting) {   // climbing out into the shared sky: something might have gone haywire
+    makeMeetingScene(net::seed());
+    float pp[3];
+    if (net::peerArrived(pp)) shipPos = V3{pp[0], pp[1], pp[2]} + V3{net::role() == net::ROLE_ANCHOR ? -18.f : 18.f, 0.f, 0.f};
+    prevShipPos = shipPos;
+    for (auto &o : objs) o.prevSide = dot(shipPos - o.p, o.o.f);
+    float me[3] = {shipPos.x, shipPos.y, shipPos.z};
+    net::setArrived(me);
+    inMeeting = true; itMe = false; tagsGiven = tagsTaken = 0;
+    glitchT = 1.4f; crossFlash = 1.f; hx::stutter(0.7f, 5, 0.05f);
+    setBanner("SOMETHING MIGHT HAVE GONE HAYWIRE...", 3000);
+    char jb[72]; snprintf(jb, sizeof(jb), "Flew a commissioned gate to meet %s.", net::peerName()); sm::journalAdd(jb);
+    return;
+  }
   char place[24];
   bool station;
   if (turnedBack) { asciiCopy(place, sizeof(place), sm::placeName(sm::urand(), 0, false)); station = rf(0, 1) < 0.6f; }
@@ -2507,7 +2585,9 @@ static void threadGate(Obj &g) {
     // the choice: this is where we are going
     dockTarget = -1;
     asciiCopy(tripOrigin, sizeof(tripOrigin), hereName);
+    if (inMeeting) leaveMeeting(true);   // leaving the shared sky ends the session
     sm::tripBegin(g.name, g.depth, (g.gflags & GF_UNKNOWN) != 0, (g.gflags & GF_FIXED) != 0);
+    if (g.uses == 2) { sm::trip().meeting = 1; net::setTravelling(); }
     if (g.lmId && !(g.gflags & GF_FIXED))   // a lane that runs past a landmark hub
       for (int i = 0; i < sm::landmarkCount(); i++) if (sm::landmarkAt(i) && (int)sm::landmarkAt(i)->id == g.lmId) asciiCopy(sm::trip().via, sizeof(sm::trip().via), sm::landmarkAt(i)->name);
     char b[112]; snprintf(b, sizeof(b), "COURSE: %s - DEPTH %u", g.name, g.depth);
@@ -2565,7 +2645,10 @@ static int touchX0 = 0, touchY0 = 0, touchLX = 0, touchLY = 0;
 static uint32_t touchT0 = 0;
 
 static constexpr int ROW_Y0 = 48, ROW_PITCH = 23, ROW_H = 20;
-static constexpr int SVC_X = 272, SVC_W = 44, SVC_Y[3] = {6, 74, 142}, SVC_H = 62;
+static constexpr int SVC_X = 272, SVC_W = 44;
+static int svcCount() { return signalsOn() && layer == 0 ? 4 : 3; }
+static int svcH() { return svcCount() == 4 ? 48 : 62; }
+static int svcY(int i) { return 6 + i * (svcH() + 4); }
 
 static constexpr int SLIDER_X = W - 22, SLIDER_Y0 = 44, SLIDER_Y1 = 196;
 
@@ -2592,9 +2675,11 @@ static void cycleTarget() {
 }
 
 static void mapTap(int x, int y);
+
 static void startNewGame();
 static void alienTick();
 static void handleTap(int x, int y) {
+  if (chatOpen) { chatTap(x, y); return; }
   if (mapOpen) { mapTap(x, y); return; }
   if (statusOpen) { statusOpen = false; hx::pop(0.15f, 0.01f); return; }
   if (bootOpen) {
@@ -2610,7 +2695,25 @@ static void handleTap(int x, int y) {
   if (endingOpen) { endingOpen = false; setBanner("KEEP FLYING. THE NAMES WILL BE THERE.", 3000); return; }
   if (stationOpen) {
     if (x >= SVC_X - 2) {   // the services column
-      for (int i = 0; i < 3; i++) if (y >= SVC_Y[i] && y < SVC_Y[i] + SVC_H && stationPage != i) { stationPage = (uint8_t)i; hx::pop(0.18f, 0.015f); }
+      for (int i = 0; i < svcCount(); i++) if (y >= svcY(i) && y < svcY(i) + svcH() && stationPage != i) { stationPage = (uint8_t)i; hx::pop(0.18f, 0.015f); }
+      return;
+    }
+    if (stationPage == 3) {
+      int row = (y >= 52 && y < 52 + 3 * 28) ? (y - 52) / 28 : -1;
+      if (row == 0 && (net::phase() == net::PH_OFF || net::phase() == net::PH_LOST)) {
+        if (layer > 0) setBanner("NO SIGNAL THIS DEEP", 1200);
+        else if (sm::spendCredits(signalsFee())) { net::commission(myCallsign(), sm::sheet().activeShip); setBanner("PORTAL COMMISSIONED - SEEKING", 1600); hx::swell(0.4f, 0.2f, 0.4f); }
+        else setBanner("NOT ENOUGH CREDIT FOR A PORTAL", 1300);
+      } else if (row == 1) {
+        if (net::phase() != net::PH_READY) { setBanner("THE SKIES HAVEN'T LINED UP YET", 1100); return; }
+        // like a rumor: a gate in this sky, magenta, to the place you'll meet
+        char nm[24]; asciiCopy(nm, sizeof(nm), sm::placeName(net::seed(), 0, false)); upcase(nm);
+        asciiCopy(meetOrigin, sizeof(meetOrigin), hereName);
+        setCourse(nm, 1, GF_DEST | GF_KNOWN);
+        launch();
+        for (int i = 0; i < MAX_OBJ; i++) if (objs[i].kind == K_GATE && sm::sameName(objs[i].name, nm)) { objs[i].uses = 2; target = i; }
+        return;
+      } else if (row == 2) { net::cancel(); setBanner("SIGNAL CANCELLED", 1000); }
       return;
     }
     if (stationPage == 0) {
@@ -2674,7 +2777,7 @@ static void setThrottleFromY(int y) {
 static void updateInput() {
   M5.update();
   auto td = M5.Touch.getDetail();
-  bool flying = !stationOpen && !endingOpen && !lostOpen && !bootOpen && !statusOpen && !mapOpen && dockAnim <= 0 && !alienHolds();
+  bool flying = !stationOpen && !endingOpen && !lostOpen && !bootOpen && !statusOpen && !mapOpen && !chatOpen && dockAnim <= 0 && !alienHolds();
   if (td.wasPressed()) {
     touchDown = true; dragging = false; sliding = false;
     touchX0 = touchLX = td.x; touchY0 = touchLY = td.y; touchT0 = millis();
@@ -2701,6 +2804,11 @@ static void updateInput() {
     touchDown = false; dragging = false; sliding = false;
   }
 
+  if (chatOpen) {
+    if (M5.BtnB.wasPressed()) { chatSend(chatDraft); chatDraft[0] = 0; }
+    else if (M5.BtnA.wasPressed() || M5.BtnC.wasPressed()) chatOpen = false;
+    return;
+  }
   if (mapOpen) {
     if (M5.BtnA.wasHold()) { mapPage ^= 1; mapTrace = -1; hx::pop(0.2f, 0.02f); }
     else if (M5.BtnA.wasClicked() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed()) { mapOpen = false; hx::pop(0.15f, 0.01f); }
@@ -2713,8 +2821,19 @@ static void updateInput() {
   }
   if (bootOpen) {
     if (newGameDone > 0) { newGameDone -= dt; return; }
-    if (M5.BtnA.isPressed() && M5.BtnC.isPressed()) {
-      // both held: the bar fills; it turns red before the save is cleared
+    if (M5.BtnA.isPressed() && M5.BtnC.isPressed()) {   // A + C: switch the experimental Signals on or off
+      signalsHold += dt;
+      if (signalsHold >= 2.0f) {
+        bool on = !signalsOn();
+        sm::flagSet("signals", on ? 1 : 0, true); saveAll();
+        signalsHold = 0; signalsDone = 1.6f; hx::swell(0.5f, 0.2f, 0.4f);
+      }
+      return;
+    }
+    signalsHold = 0;
+    if (signalsDone > 0) { signalsDone -= dt; }
+    if (M5.BtnB.isPressed() && M5.BtnC.isPressed()) {
+      // B + C held: the bar fills; it turns red before the save is cleared
       float before = newGameHold;
       newGameHold += dt;
       if (before < 1.5f && newGameHold >= 1.5f) hx::pop(0.35f, 0.03f);
@@ -2963,7 +3082,8 @@ static void autopilot() {
 static void updateContacts() {
   for (int i = 0; i < MAX_OBJ; i++) {
     Obj &o = objs[i];
-    if (o.kind == K_NONE) continue;
+    if (o.kind == K_NONE || o.remote) continue;   // the other pilot moves by their own hand
+    if (inMeeting && net::role() == net::ROLE_GUEST && o.net && o.net < 1000 && o.kind == K_SHIP) { o.p += o.v * dt; continue; }   // the anchor's ships: puppets here
     if (o.timer > 0) o.timer -= dt;
     if (o.spin != 0 && o.kind != K_SHIP && o.kind != K_STATION) { o.o.roll(o.spin * dt); o.o.yaw(o.spin * 0.37f * dt); o.o.fix(); }
     if (o.kind == K_STATION) { o.o.roll(o.spin * dt); o.o.fix(); }
@@ -3026,7 +3146,7 @@ static void stationHull(const Obj &st, V3 p, V3 &c, float &cr) {
 static void collide() {
   for (int i = 0; i < MAX_OBJ; i++) {
     Obj &o = objs[i];
-    if (!(o.kind == K_STATION || o.kind == K_ROCK || o.kind == K_BODY || o.kind == K_LANDMARK || o.kind == K_SHIP)) continue;
+    if (!(o.kind == K_STATION || o.kind == K_ROCK || o.kind == K_BODY || o.kind == K_LANDMARK || o.kind == K_SHIP) || o.remote) continue;
     float r = o.radius * 1.05f;
     V3 centre = o.p;
     if (o.kind == K_STATION) stationHull(o, shipPos, centre, r);
@@ -3132,7 +3252,9 @@ static void hapticWorld() {
 }
 
 static void updateWorld() {
-  shakeX = shakeY = 0.f;   // turbulence sets it each flying frame; overlays never inherit a stale shake
+  shakeX = shakeY = 0.f;
+  netTick();                       // signals (no-op unless commissioned)
+  if (glitchT > 0.f) glitchT -= dt;   // turbulence sets it each flying frame; overlays never inherit a stale shake
   sm::simTick(millis());
   sm::contractTick();
   serviceBanner();
@@ -3369,6 +3491,7 @@ static void drawObjects() {
         }
         break;
       case K_SHIP:
+        if (o.remote) { drawRemoteShip(o); break; }
         if (o.mesh == 255) {   // the hostile: a thing of spines
           if (project(o.p, sx, sy, z)) {
             float r = o.radius * FOCAL / z;
@@ -3799,12 +3922,14 @@ static void drawStation() {
   cv.setTextColor(rgb(150, 160, 172)); cv.setCursor(12, 37);
   cv.printf("$%ld  H%d/%d  F%d/%d  HOLD %u/%u", (long)p.credits, p.hull, p.hullMax, p.fuel, p.fuelCap, p.holdUsed, p.holdCap);
   // services
-  static const char *svc[3] = {"BOARD", "HANGAR", "MARKET"};
-  for (int i = 0; i < 3; i++) {
+  static const char *svc[4] = {"BOARD", "HANGAR", "MARKET", "SIGNAL"};
+  for (int i = 0; i < svcCount(); i++) {
     bool on = stationPage == i;
-    cv.fillRoundRect(SVC_X, SVC_Y[i], SVC_W, SVC_H, 6, on ? shade(bl.accent, 0.55f) : rgb(14, 20, 28));
-    cv.drawRoundRect(SVC_X, SVC_Y[i], SVC_W, SVC_H, 6, on ? bl.light : rgb(50, 60, 72));
-    int cx = SVC_X + SVC_W / 2, cy = SVC_Y[i] + 22;
+    int SY = svcY(i), SH = svcH();
+    uint16_t sig = rgb(200, 70, 200);
+    cv.fillRoundRect(SVC_X, SY, SVC_W, SH, 6, on ? shade(i == 3 ? sig : bl.accent, 0.55f) : rgb(14, 20, 28));
+    cv.drawRoundRect(SVC_X, SY, SVC_W, SH, 6, on ? bl.light : (i == 3 ? shade(sig, 0.6f) : rgb(50, 60, 72)));
+    int cx = SVC_X + SVC_W / 2, cy = SY + SH / 2 - 8;
     uint16_t ic = on ? rgb(240, 245, 250) : rgb(130, 140, 150);
     if (i == 0) { for (int k = 0; k < 3; k++) cv.fillRect(cx - 10, cy - 8 + k * 6, 20, 3, ic); }                    // a list
     else if (i == 1) {                                                                                             // a turret, half size
@@ -3814,9 +3939,10 @@ static void drawStation() {
         if (ix) cv.drawPixel(cx - 12 + k2 / 2, cy - 9 + j / 2, on ? a.pal[ix] : shade(a.pal[ix], 0.55f));
       }
     }
-    else { cv.drawLine(cx - 11, cy + 6, cx - 4, cy - 2, ic); cv.drawLine(cx - 4, cy - 2, cx + 2, cy + 2, ic); cv.drawLine(cx + 2, cy + 2, cx + 11, cy - 8, ic); }   // a price line
+    else if (i == 2) { cv.drawLine(cx - 11, cy + 6, cx - 4, cy - 2, ic); cv.drawLine(cx - 4, cy - 2, cx + 2, cy + 2, ic); cv.drawLine(cx + 2, cy + 2, cx + 11, cy - 8, ic); }   // a price line
+    else { for (int k = 0; k < 3; k++) cv.drawCircle(cx, cy + 4, 4 + k * 4, on ? rgb(255, 160, 255) : rgb(150, 80, 150)); }   // a signal
     cv.setTextColor(on ? rgb(255, 255, 255) : rgb(140, 150, 160));
-    cv.setCursor(cx - (int)strlen(svc[i]) * 3, SVC_Y[i] + SVC_H - 14); cv.print(svc[i]);
+    cv.setCursor(cx - (int)strlen(svc[i]) * 3, SY + SH - 12); cv.print(svc[i]);
   }
   char dbuf[112] = "";
   if (stationPage == 0) {
@@ -3854,6 +3980,31 @@ static void drawStation() {
       case 4: asciiCopy(dbuf, sizeof(dbuf), opportunityTaken ? "" : stationOpportunity.detail); break;
       case 5: snprintf(dbuf, sizeof(dbuf), "back out among the gates"); break;
     }
+  } else if (stationPage == 3) {
+    // ---------------- signals: commission a portal, open the gate ----------------
+    net::Phase ph = net::phase();
+    bool commissioned = ph != net::PH_OFF && ph != net::PH_LOST;
+    const char *rows[3]; char r0[44], r1[44];
+    snprintf(r0, sizeof(r0), commissioned ? "PORTAL COMMISSIONED" : "COMMISSION A PORTAL  %dcr", signalsFee()); rows[0] = r0;
+    snprintf(r1, sizeof(r1), "OPEN GATE"); rows[1] = r1; rows[2] = "CANCEL SIGNAL";
+    for (int i = 0; i < 3; i++) {
+      int y = 52 + i * 28; bool ready = i == 1 && ph == net::PH_READY;
+      uint16_t bg = i == 1 ? (ready ? rgb(30, 110, 50) : rgb(26, 30, 36)) : i == 0 ? (commissioned ? rgb(40, 30, 50) : rgb(70, 24, 70)) : rgb(30, 20, 24);
+      cv.fillRoundRect(12, y, 250, 22, 5, bg);
+      cv.drawRoundRect(12, y, 250, 22, 5, i == 1 ? (ready ? rgb(140, 255, 160) : rgb(60, 66, 72)) : rgb(150, 70, 150));
+      cv.setTextColor(i == 1 && !ready ? rgb(90, 96, 104) : rgb(240, 230, 245)); cv.setCursor(22, y + 7); cv.print(rows[i]);
+    }
+    cv.setTextColor(rgb(200, 150, 210)); cv.setCursor(14, 140);
+    if (!commissioned) cv.print("EXPERIMENTAL: fold two skies together.");
+    else if (ph == net::PH_SEEKING) { cv.print("seeking another commissioned pilot"); for (int k = 0; k < ((int)(tNow * 2) % 4); k++) cv.print("."); }
+    else {
+      cv.printf("PAIRED: %s  (%s)", net::peerName(), sm::shipSpec(net::peerShip()).name);
+      cv.setCursor(14, 152); cv.setTextColor(rgb(160, 140, 180));
+      cv.print(net::role() == net::ROLE_ANCHOR ? "you hold the anchor: the sky follows you" : "you follow their anchor");
+    }
+    cv.setTextColor(rgb(120, 110, 130)); cv.setCursor(14, 168); cv.print("both pilots commission; the gate turns");
+    cv.setCursor(14, 178); cv.print("green when the skies line up.");
+    snprintf(dbuf, sizeof(dbuf), "fly it, then stay together. leave by any gate.");
   } else if (stationPage == 1) {
     // ---------------- the hangar ----------------
     static const char *tabs[2] = {"EQUIPMENT", "SHIPS"};
@@ -3999,8 +4150,18 @@ static void drawBoot() {
   cv.setCursor(22, 190);
   cv.print("tap to continue");
   cv.setTextColor(rgb(90, 104, 116));
+  cv.setCursor(118, 150);
+  cv.print("hold B + C: new game");
   cv.setCursor(118, 160);
-  cv.print("hold A + C: new game");
+  cv.setTextColor(signalsOn() ? rgb(230, 90, 230) : rgb(90, 104, 116));
+  cv.print(signalsOn() ? "hold A + C: signals ON" : "hold A + C: signals (exp.)");
+  if (signalsHold > 0.f || signalsDone > 0.f) {
+    float u = signalsDone > 0.f ? 1.f : clampf(signalsHold / 2.0f, 0.f, 1.f);
+    cv.drawRect(118, 172, 180, 8, rgb(60, 70, 80));
+    cv.fillRect(119, 173, (int)(178 * u), 6, rgb(200, 70, 200));
+    cv.setTextColor(rgb(230, 150, 230)); cv.setCursor(118, 182);
+    cv.print(signalsDone > 0.f ? (signalsOn() ? "signals on: see the dock" : "signals off") : "keep holding");
+  }
   if (newGameHold > 0.f || newGameDone > 0.f) {
     float u = newGameDone > 0.f ? 1.f : clampf(newGameHold / 2.0f, 0.f, 1.f);
     bool red = u >= 0.75f;
@@ -4702,6 +4863,157 @@ static bool drawAlienAftermath() {
 }
 
 // ============================================================
+//  SIGNALS (experimental): two pilots, one sky
+// ============================================================
+static bool signalsOn() { return sm::flagGet("signals") > 0; }
+static const char *myCallsign() {
+  static char cs[16];
+  uint64_t mac = ESP.getEfuseMac();
+  snprintf(cs, sizeof(cs), "MANTIS-%04X", (unsigned)((mac >> 32) ^ (mac & 0xFFFF)) & 0xFFFF);
+  return cs;
+}
+static int signalsFee() { const Obj *st = dockedStation(); return st && st->uses == BR_LIMINAR ? 140 : 180; }   // Liminar builds gates: cheapest
+static float meetSpot[3] = {0, 0, 0};
+
+// The meeting sky: built from the shared seed alone, on its own random stream, and
+// never written to the atlas or the save. The regular game's randomness is restored after.
+static void makeMeetingScene(uint32_t seed) {
+  uint32_t keepRng = rngState;
+  rngState = seed ? seed : 1;
+  clearWorld();
+  layer = 0; nearStar = false;
+  asciiCopy(hereName, sizeof(hereName), sm::placeName(seed, 0, false)); upcase(hereName);
+  buildSky(seed ^ 0x5EEDu);
+  shipPos = V3{0, 0, 0}; prevShipPos = shipPos;
+  shipB = Basis::facing(V3{0, 0, 1}, V3{0, 1, 0});
+  spawnBody(BT_GIANT, 760.f, 210.f, norm(V3{-0.7f, 0.15f, 0.7f}));
+  uint8_t looks[4] = {makeLook(SS_HEXCORE, BR_LIMINAR), makeLook(SS_RING, BR_MALTAPLEX), makeLook(SS_HABITAT, BR_DESERET), makeLook(SS_SPINDLE, BR_PORTEX)};
+  V3 sp = V3{60.f, 10.f, 210.f};
+  placeStation(sp, norm(V3{0, 0, 0} - sp), looks[rnd() % 4]);
+  for (int i = 0; i < 6; i++) spawnRock(V3{rf(-180, 180), rf(-40, 40), rf(120, 320)}, rf(3.5f, 6.f));
+  uint16_t sid = 1000;
+  for (auto &o : objs) if (o.kind != K_NONE) o.net = sid++;   // seeded: the same ids on both devices
+  rngState = keepRng;
+  // each pilot's own way home (not shared)
+  Obj *hg = spawnGate(V3{-90.f, 0.f, -40.f}, norm(V3{1.f, 0.f, 0.3f}), meetOrigin, 1, GF_DEST | GF_KNOWN, 9.f);
+  if (hg) hg->net = 0;
+  sm::contractSetHere(hereName); sm::contractSetBand(0);
+  sunDir = norm(V3{-0.4f, 0.5f, 0.6f});
+}
+
+static Obj *ensureRemote() {
+  if (remoteIdx >= 0 && objs[remoteIdx].kind == K_SHIP && objs[remoteIdx].remote) return &objs[remoteIdx];
+  Obj *o = newObj(K_SHIP);
+  if (!o) return nullptr;
+  o->remote = true; o->radius = 4.f; o->mesh = M_COBRA; o->col = rgb(200, 200, 210); o->enc = sm::ENC_TRAVELER;
+  asciiCopy(o->name, sizeof(o->name), net::peerName());
+  remoteIdx = idxOf(o);
+  return o;
+}
+
+static void leaveMeeting(bool sayBye) {
+  if (sayBye) net::sendBye();
+  net::cancel();
+  inMeeting = false;
+  if (remoteIdx >= 0) { objs[remoteIdx].kind = K_NONE; remoteIdx = -1; }
+}
+
+// Every frame: hear the other pilot, share what the anchor spawns, tell them where we are.
+static void netTick() {
+  if (net::phase() == net::PH_OFF) return;
+  net::poll();
+  if (!inMeeting) return;
+  if (net::takeBye()) {
+    char b[64]; snprintf(b, sizeof(b), "%s LEFT THE SKY", net::peerName()); setBanner(b, 2200);
+    if (remoteIdx >= 0) { addBoom(objs[remoteIdx].p, 6.f, rgb(140, 230, 220)); objs[remoteIdx].kind = K_NONE; remoteIdx = -1; }
+    return;
+  }
+  if (net::phase() == net::PH_LOST) {
+    if (remoteIdx >= 0) { objs[remoteIdx].kind = K_NONE; remoteIdx = -1; setBanner("SIGNAL LOST", 1600); }
+    return;
+  }
+  // the other pilot
+  const net::RemoteState &r = net::remote();
+  if (r.atMs) {
+    Obj *o = ensureRemote();
+    if (o) {
+      float age = (millis() - r.atMs) / 1000.f; if (age > 0.6f) age = 0.6f;
+      V3 want = V3{r.p[0], r.p[1], r.p[2]} + V3{r.v[0], r.v[1], r.v[2]} * age;   // dead reckoning
+      o->p = lerp3(o->p, want, clampf(dt * 8.f, 0.f, 1.f));
+      o->v = V3{r.v[0], r.v[1], r.v[2]};
+      V3 f = V3{r.f[0], r.f[1], r.f[2]}, u = V3{r.u[0], r.u[1], r.u[2]};
+      if (len(f) > 0.5f && len(u) > 0.5f) { o->o = Basis::facing(norm(f), norm(u)); }
+      o->uses = r.ship; o->hostile = false; o->ghost = (r.flags & 2) != 0;
+    }
+  }
+  netSendT -= dt;
+  if (netSendT <= 0.f) {
+    netSendT = 0.08f;   // ~12 Hz
+    V3 v = shipB.f * shipSpeed;
+    float p[3] = {shipPos.x, shipPos.y, shipPos.z}, vv[3] = {v.x, v.y, v.z}, f[3] = {shipB.f.x, shipB.f.y, shipB.f.z}, u[3] = {shipB.u.x, shipB.u.y, shipB.u.z};
+    uint8_t flags = (uint8_t)((theater == TH_COMBAT ? 1 : 0) | (cloakT > 0.f ? 2 : 0) | (itMe ? 4 : 0));
+    net::sendState(p, vv, f, u, sm::sheet().activeShip, flags);
+  }
+  // shared spawns: the anchor shares what appears; the guest only shows what it is told
+  if (net::role() == net::ROLE_ANCHOR) {
+    for (auto &o : objs) {
+      if (o.net || o.remote || (o.kind != K_SHIP && o.kind != K_POD && o.kind != K_WRECK && o.kind != K_ROCK)) continue;
+      o.net = netNextId++;
+      net::SpawnMsg m{}; m.id = o.net; m.enc = o.enc; m.mesh = o.mesh; m.hostile = o.hostile; m.ghost = o.ghost; m.col = o.col; m.radius = o.radius;
+      m.p[0] = o.p.x; m.p[1] = o.p.y; m.p[2] = o.p.z; m.v[0] = o.v.x; m.v[1] = o.v.y; m.v[2] = o.v.z;
+      asciiCopy(m.name, sizeof(m.name), o.name);
+      m.ghost |= (uint8_t)(o.kind << 4);   // the object kind rides in the high bits
+      net::sendSpawn(m);
+    }
+    npcSyncT -= dt;
+    if (npcSyncT <= 0.f) {
+      npcSyncT = 0.25f;
+      net::NpcMsg ms[8]; int n = 0;
+      for (auto &o : objs) if (o.net && o.net < 1000 && o.kind == K_SHIP && !o.remote && n < 8) {
+        ms[n].id = o.net; ms[n].p[0] = o.p.x; ms[n].p[1] = o.p.y; ms[n].p[2] = o.p.z; ms[n].v[0] = o.v.x; ms[n].v[1] = o.v.y; ms[n].v[2] = o.v.z; n++;
+      }
+      if (n) net::sendNpcs(ms, n);
+    }
+  } else {
+    spawnTimer = 99.f;   // the guest never spawns its own contacts here
+    net::SpawnMsg m;
+    while (net::takeSpawn(m)) {
+      uint8_t kind = (uint8_t)(m.ghost >> 4);
+      Obj *o = newObj(kind ? kind : (uint8_t)K_SHIP);
+      if (!o) break;
+      o->net = m.id; o->enc = m.enc; o->mesh = m.mesh; o->hostile = m.hostile; o->ghost = (m.ghost & 1) != 0; o->col = m.col; o->radius = m.radius;
+      o->p = V3{m.p[0], m.p[1], m.p[2]}; o->v = V3{m.v[0], m.v[1], m.v[2]};
+      if (len(o->v) > 0.1f) o->o = Basis::facing(norm(o->v), V3{0, 1, 0});
+      asciiCopy(o->name, sizeof(o->name), m.name);
+      if (o->kind == K_ROCK) o->uses = 3;
+    }
+    net::NpcMsg n;
+    while (net::takeNpc(n)) for (auto &o : objs) if (o.net == n.id && o.kind != K_NONE) { o.p = lerp3(o.p, V3{n.p[0], n.p[1], n.p[2]}, 0.6f); o.v = V3{n.v[0], n.v[1], n.v[2]}; }
+  }
+  uint16_t id;
+  while (net::takeRemove(id)) for (int i = 0; i < MAX_OBJ; i++) if (objs[i].net == id && objs[i].kind != K_NONE) { netEcho = true; if (target == i) target = -1; killObj(i); netEcho = false; }
+  while (net::takeKill(id)) {   // they shot down a shared hostile: it counts for your work too
+    sm::contractOnResolve(sm::ENC_PIRATE, true, true);
+    for (int i = 0; i < MAX_OBJ; i++) if (objs[i].net == id && objs[i].kind != K_NONE) { addBoom(objs[i].p, 5.f, rgb(255, 160, 90)); netEcho = true; killObj(i); netEcho = false; }
+  }
+  char chat[56];
+  while (net::takeChat(chat, sizeof(chat))) {
+    char b[112]; snprintf(b, sizeof(b), "%s: %s", net::peerName(), chat); setBanner(b, 3200); hx::pop(0.3f, 0.03f);
+    chatLogAdd(b);
+  }
+  int hits = net::takeTag();
+  if (hits > 0) {   // tagged: their fire, your shields, and now you're it
+    tagsTaken += hits; itMe = true;
+    float sx = 160, sy = 40, sz;
+    if (remoteIdx >= 0) project(objs[remoteIdx].p, sx, sy, sz);
+    for (int k = 0; k < hits && k < 4; k++) addBolt(sx, sy, 160 + rf(-50, 50), H - 30, rgb(255, 90, 200), 2, 8);
+    shieldFx = 0.35f; shieldFxX = 160; shieldFxY = H - 30;
+    hx::thud(0.5f);
+    char b[64]; snprintf(b, sizeof(b), "TAGGED BY %s x%d - YOU'RE IT", net::peerName(), hits); setBanner(b, 2200);
+  }
+}
+
+// ============================================================
 //  session: capture, resume, new game
 // ============================================================
 static void captureSession(Session &ss) {
@@ -4712,6 +5024,7 @@ static void captureSession(Session &ss) {
   ss.docked = (stationOpen || dockAnim > 0) ? 1 : 0;
   ss.trip = sm::trip();
   asciiCopy(ss.here, sizeof(ss.here), hereName);
+  if (inMeeting || sm::trip().meeting) { asciiCopy(ss.here, sizeof(ss.here), meetOrigin[0] ? meetOrigin : hereName); ss.layer = 0; memset(&ss.trip, 0, sizeof(ss.trip)); ss.station = 0; ss.docked = 0; }
   asciiCopy(ss.origin, sizeof(ss.origin), tripOrigin);
   ss.throttle = throttleT;
 }
@@ -4754,6 +5067,77 @@ static void startNewGame() {
   saveAll();
   serviceSD(true);
   setBanner("NEW PILOT. NEW SKY.", 3000);
+}
+
+// the other pilot, drawn as their ship's own side-view art, scaled by distance, facing their way
+static void drawRemoteShip(const Obj &o) {
+  float sx, sy, z;
+  if (!project(o.p, sx, sy, z) || !onScreen(sx, sy, 80)) return;
+  uint8_t t = o.uses < sm::SHIP_COUNT ? o.uses : 0;
+  int aw = SHIP_ART_W, ah = SHIP_ART_H;
+  const ShipArt *a = nullptr;
+  if (t != sm::SHIP_MANTIS) { a = t == sm::SHIP_FALCOR ? &SHIP_FALCOR : t == sm::SHIP_HONEYBEE ? &SHIP_HONEYBEE : t == sm::SHIP_MALTESE ? &SHIP_MALTESE : &SHIP_GHOST; aw = a->w; ah = a->h; }
+  float w = clampf(14.f * FOCAL / z, 6.f, 140.f), h = w * ah / aw;
+  bool flip = dot(o.o.f, shipB.r) < 0.f;   // heading left on screen: mirror the side view
+  int x0 = (int)(sx - w / 2), y0 = (int)(sy - h / 2), iw = (int)w, ih = (int)h;
+  bool cloaked = o.ghost;
+  for (int j = 0; j < ih; j++) for (int i = 0; i < iw; i++) {
+    if (cloaked && ((i + j + (int)(tNow * 20)) % 5)) continue;   // cloaked: a shimmer, not a ship
+    int u = (flip ? iw - 1 - i : i) * aw / iw, v = j * ah / ih;
+    uint16_t c = a ? (a->px[v * aw + u] ? a->pal[a->px[v * aw + u]] : 0) : SHIP_ART[v * SHIP_ART_W + u];
+    if (c) cv.drawPixel(x0 + i, y0 + j, cloaked ? rgb(140, 230, 220) : c);
+  }
+  const net::RemoteState &r = net::remote();
+  if (r.flags & 4) cv.drawCircle((int)sx, (int)sy, (int)(w * 0.6f), ((int)(tNow * 6) & 1) ? rgb(255, 80, 230) : rgb(150, 30, 140));   // they're it
+  cv.setTextColor(rgb(230, 150, 230)); cv.setCursor((int)sx - (int)strlen(o.name) * 3, y0 - 10); cv.print(o.name);
+}
+
+// ---- chat: a log, some presets, a keyboard ----
+static const char *KEYS[3] = {"QWERTYUIOP", "ASDFGHJKL'", "ZXCVBNM,.?"};
+static const char *ROASTS[3] = {"NICE PARKING", "YOUR TRAILER IS SHOWING", "TAG. YOU'RE IT."};
+static void chatSend(const char *t) {
+  if (!t || !t[0]) return;
+  net::sendChat(t);
+  char b[64]; snprintf(b, sizeof(b), "YOU: %s", t); chatLogAdd(b);
+  hx::pop(0.25f, 0.02f);
+}
+static void drawChat() {
+  cv.fillRoundRect(4, 4, 312, 232, 8, rgb(10, 6, 14));
+  cv.drawRoundRect(4, 4, 312, 232, 8, rgb(200, 70, 200));
+  cv.setTextColor(rgb(230, 150, 230)); cv.setCursor(12, 10); cv.printf("SIGNAL  %s", net::peerName());
+  cv.setTextColor(rgb(120, 100, 130)); cv.setCursor(196, 10); cv.printf("TAGS %d:%d", tagsGiven, tagsTaken);
+  for (int i = 0; i < chatLogN; i++) { cv.setTextColor(strncmp(chatLog[i], "YOU:", 4) ? rgb(220, 200, 230) : rgb(140, 220, 200)); cv.setCursor(12, 24 + i * 11); cv.print(chatLog[i]); }
+  cv.fillRect(10, 82, 300, 14, rgb(24, 16, 30)); cv.setTextColor(rgb(255, 255, 255)); cv.setCursor(14, 85);
+  cv.print(chatDraft); if ((int)(tNow * 2) & 1) cv.print("_");
+  for (int i = 0; i < 3; i++) {
+    int x = 10 + i * 100; cv.fillRoundRect(x, 100, 96, 16, 4, rgb(50, 20, 50));
+    char sh[17]; snprintf(sh, sizeof(sh), "%.15s", ROASTS[i]); cv.setTextColor(rgb(240, 200, 240)); cv.setCursor(x + 4, 104); cv.print(sh);
+  }
+  for (int r = 0; r < 3; r++) for (int k = 0; k < 10; k++) {
+    int x = 8 + k * 30, y = 122 + r * 26;
+    cv.fillRoundRect(x, y, 28, 22, 3, rgb(30, 26, 40)); cv.setTextColor(rgb(230, 230, 240)); cv.setCursor(x + 11, y + 7); char ks[2] = {KEYS[r][k], 0}; cv.print(ks);
+  }
+  static const char *bot[4] = {"SPACE", "DEL", "SEND", "CLOSE"};
+  for (int i = 0; i < 4; i++) {
+    int x = 8 + i * 76; cv.fillRoundRect(x, 200, 72, 24, 4, i == 2 ? rgb(30, 100, 50) : i == 3 ? rgb(70, 24, 30) : rgb(30, 26, 40));
+    cv.setTextColor(rgb(240, 240, 240)); cv.setCursor(x + (72 - (int)strlen(bot[i]) * 6) / 2, 208); cv.print(bot[i]);
+  }
+}
+static void chatTap(int x, int y) {
+  size_t n = strlen(chatDraft);
+  if (y >= 100 && y < 116) { int i = (x - 10) / 100; if (i >= 0 && i < 3) chatSend(ROASTS[i]); return; }
+  if (y >= 122 && y < 200) {
+    int r = (y - 122) / 26, k = (x - 8) / 30;
+    if (r >= 0 && r < 3 && k >= 0 && k < 10 && n < sizeof(chatDraft) - 1) { chatDraft[n] = KEYS[r][k]; chatDraft[n + 1] = 0; hx::pop(0.1f, 0.01f); }
+    return;
+  }
+  if (y >= 200) {
+    int i = (x - 8) / 76;
+    if (i == 0 && n < sizeof(chatDraft) - 1) { chatDraft[n] = ' '; chatDraft[n + 1] = 0; }
+    else if (i == 1 && n > 0) chatDraft[n - 1] = 0;
+    else if (i == 2) { chatSend(chatDraft); chatDraft[0] = 0; }
+    else if (i == 3) chatOpen = false;
+  }
 }
 
 static void drawEnding() {
@@ -4799,6 +5183,16 @@ static void draw() {
   if (alienHolds()) drawPowerLoss();            // the cockpit goes dark...
   if (alien.active && layer > 0) { drawAlienScan(alienLX, alienLY); drawAlienShape(); }   // ...it does not
   if (!alienHolds()) { drawTargeting(); drawHud(); }
+  if (inMeeting) {   // who you're with, the tag score, and who's it
+    cv.setTextColor(rgb(200, 110, 200)); cv.setCursor(112, 66);
+    if (net::phase() == net::PH_LOST) cv.print("SIGNAL LOST");
+    else cv.printf("%s  %d:%d", net::peerName(), tagsGiven, tagsTaken);
+    if (itMe) { cv.setTextColor(((int)(tNow * 4) & 1) ? rgb(255, 80, 230) : rgb(160, 40, 150)); cv.setCursor(136, 78); cv.print("YOU'RE IT"); }
+  }
+  if (glitchT > 0.f) {   // the haywire arrival
+    int bars = (int)(glitchT * 14);
+    for (int i = 0; i < bars; i++) { int y = (int)(rnd() % H), hh = 1 + (int)(rnd() % 5), x = (int)(rnd() % W); cv.fillRect(x, y, 30 + (int)(rnd() % 160), hh, (rnd() & 1) ? rgb(230, 60, 230) : rgb(60, 230, 210)); }
+  }
   if (launchAnim > 0) {
     float u = launchAnim / 0.9f;
     for (int i = 0; i < 12; i++) {
@@ -4815,6 +5209,7 @@ static void draw() {
   }
   if (statusOpen) { if (statusPage) drawJournal(); else drawStatus(); }
   if (mapOpen) { if (mapPage) drawSystemMap(); else drawMap(); }
+  if (chatOpen) drawChat();
   if (bootOpen) drawBoot();
   if (lostOpen) drawLost();
   if (endingOpen) drawEnding();

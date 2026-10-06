@@ -1,7 +1,7 @@
 #include "harness_core.inc"
 static bool qA=false,qC=false,qAdown=false,qCdown=false;
 void M5Class::update() { g_ms += 8; BtnA.p=BtnB.p=BtnC.p=false; BtnA.click=BtnA.hold=BtnB.click=BtnB.hold=BtnC.click=BtnC.hold=false;
-  BtnA.down=qAdown; BtnC.down=qCdown; Touch.d = TouchDetail{}; Imu.data.accel={0,0,1}; }
+  BtnB.down=qAdown; BtnC.down=qCdown; Touch.d = TouchDetail{}; Imu.data.accel={0,0,1}; }
 static void frame() { uint32_t now=millis(); static uint32_t prev=now; dt=clampf((now-prev)/1000.f,0.008f,0.05f); prev=now; tNow+=dt; updateInput(); updateWorld(); hx::update(dt); }
 static void flyTrip(int g) { threadGate(objs[g]); for (int guard=0; guard<40 && sm::trip().active; guard++) { int n=navObj; if (n<0||objs[n].kind==K_NONE){spawnNextOnPath(); n=navObj;} if(n<0)break; threadGate(objs[n]); } }
 static void report(const char *tag) {

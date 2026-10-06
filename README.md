@@ -204,8 +204,20 @@ Arriving somewhere for the first time deals it its own gates: mostly to places n
 
 With an SD card in the Core2, the game keeps `/spacemantis-saves/pilot.sav` (the whole game, including where you are and how far into a dive), a readable `journal.txt`, and a `README.txt`. It saves on meaningful events and every half minute, and on power-up picks up where you left it. Internal flash keeps a mirror, so no card means nothing is lost.
 
-- **New game:** hold **A + C** on the title screen for two seconds. The bar turns red just before the save is cleared. Or delete `pilot.sav` (only that file) from the card.
+- **New game:** hold **B + C** on the title screen for two seconds. The bar turns red just before the save is cleared. Or delete `pilot.sav` (only that file) from the card.
 
 ## Below the roads
 
 Something lives down there. It is rare, and it never hurts the ship.
+
+## Signals (experimental)
+
+Hold **A + C** on the title screen for two seconds to switch Signals on (again to switch it off). Docks then show a **SIGNAL** button.
+
+Two pilots on two Core2s, near each other: both dock, open SIGNAL and **commission a portal**. Pairing needs no caller or answerer: both beacon, each pairs with the first other commissioning device it hears, and roles come from MAC order (the lower MAC is the *anchor*: it seeds the sky and owns the shared contacts). When both see each other, **OPEN GATE** turns green and launches you toward a magenta gate. One layer down there is an experimental wake; climbing out, something goes a little haywire, and you are in the same sky as the other pilot.
+
+- Target the other ship: **HAIL** opens a chat window (presets and a keyboard); **TAG** fires a harmless volley that only lands if you are on them. Get tagged and you are it.
+- The anchor's contacts (pirates, merchants, pods) appear in both skies; shooting down a shared pirate counts for both pilots' work. The meeting sky's dock posts **PIRATE NEST (CO-OP)**.
+- Leaving by any gate ends the session; your own gate takes you home. The meeting sky is never written to your map or your save; powering off there wakes you at home.
+
+Transport: ESP-NOW now (`src/sig_transport_espnow.cpp`, no router). A Wi-Fi backend implements the same four calls in `src/sig_transport.h`; it must only make outbound, TLS connections (no listening sockets on the device), keep credentials on the SD card rather than in firmware, and use a fresh random session topic per meeting.

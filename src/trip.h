@@ -22,6 +22,7 @@ struct Trip {
   uint8_t turnedBack;    // dive abandoned: the climb lands somewhere else
   uint8_t legs;          // portals crossed this trip
   char via[NAME_LEN];    // a landmark hub this trip passes (empty = none)
+  uint8_t meeting;       // through a commissioned (signals) gate to the shared sky
 };
 
 struct Crossing {
