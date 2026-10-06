@@ -16,6 +16,10 @@ Contract s_done{};
 bool s_doneFresh = false;
 uint32_t s_lastHeatTick = 0;
 char s_here[NAME_LEN] = "";   // where the pilot is now: never a destination
+struct LaneCand { char name[NAME_LEN]; uint8_t depth, visited; };
+LaneCand s_lanes[8];          // gates in this system a job may point at
+uint8_t s_band = 0;           // the layer the pilot is in
+int s_laneN = 0;
 
 const char *kindTitle(ContractKind k) {
   switch (k) {
@@ -31,6 +35,8 @@ const char *kindTitle(ContractKind k) {
     case CK_GHOST: return "GHOST THE PATROL";
     case CK_DEPTHRUN: return "DEPTH RUN";
     case CK_LANDMARK: return "LANDMARK WATCH";
+    case CK_DEEPRESCUE: return "PODS LOST BELOW";
+    case CK_DEEPSCAN: return "DEEP SCAN";
     default: return "-";
   }
 }
@@ -73,24 +79,19 @@ bool roll(Contract &o, ContractKind k) {
   strncpy(o.title, kindTitle(k), sizeof(o.title) - 1);
 
   if (hasDest(k)) {
-    if (k == CK_DEPTHRUN) {
-      do { strncpy(o.dest, placeName(urand(), DEPTH_DEEP, false), NAME_LEN - 1); } while (sameName(o.dest, s_here));
-      o.destDepth = (uint8_t)urand(2, 3);
-    } else {
-      GateOffer hand[6];
-      int n = buildGateHand(DEPTH_REAL, hand, 6);
-      int idx = n > 0 ? (int)(urand() % (uint32_t)n) : -1;
-      // a delivery is never to the place you are standing in, nor to a deep landmark
-      for (int k = 0; k < n && idx >= 0 && (hand[idx].persistent || sameName(hand[idx].name, s_here)); k++) idx = (idx + 1) % n;
-      if (idx >= 0 && !hand[idx].persistent && !sameName(hand[idx].name, s_here)) {
-        strncpy(o.dest, hand[idx].name, NAME_LEN - 1);
-        o.destDepth = hand[idx].depthRating;
-      } else {
-        do { strncpy(o.dest, placeName(urand(), DEPTH_REAL, false), NAME_LEN - 1); } while (sameName(o.dest, s_here));
-        o.destDepth = 1;
+    // A job never makes a gate: it points at one already in this system,
+    // somewhere not yet been if there is one. A depth run needs a deep lane.
+    int pick = -1, seen = 0;
+    for (int pass = 0; pass < 2 && pick < 0; pass++)
+      for (int i = 0; i < s_laneN; i++) {
+        const LaneCand &c = s_lanes[i];
+        if ((pass == 0) == (c.visited != 0) || sameName(c.name, s_here)) continue;
+        if (k == CK_DEPTHRUN && c.depth < 2) continue;
+        if (urand(0, ++seen - 1) == 0) pick = i;
       }
-    }
-    if (o.destDepth < 1) o.destDepth = 1;
+    if (pick < 0) return false;
+    strncpy(o.dest, s_lanes[pick].name, NAME_LEN - 1);
+    o.destDepth = s_lanes[pick].depth < 1 ? 1 : s_lanes[pick].depth;
   }
 
   switch (k) {
@@ -106,6 +107,8 @@ bool roll(Contract &o, ContractKind k) {
     case CK_GHOST:    o.pay = (int16_t)(150 + urand(0, 80));  o.xp = 40; o.track = CR_GHOST;       o.need = 1; break;
     case CK_DEPTHRUN: o.pay = (int16_t)(200 + urand(0, 80));  o.xp = 55; o.track = CR_DEPTHRUNNER; o.need = 1; break;
     case CK_LANDMARK: o.pay = (int16_t)(250 + urand(0, 80));  o.xp = 65; o.track = CR_DEPTHRUNNER; o.need = 1; break;
+    case CK_DEEPRESCUE: o.pay = (int16_t)(180 + urand(0, 90)); o.xp = 40; o.track = CR_RESCUER;   o.need = 1; break;
+    case CK_DEEPSCAN: o.pay = (int16_t)(160 + urand(0, 90));   o.xp = 38; o.track = CR_WANDERER;  o.need = 2; break;
     default: return false;
   }
   // deeper destinations pay for the dive
@@ -152,7 +155,32 @@ void contractSetHere(const char *place) {
   strncpy(s_here, place ? place : "", NAME_LEN - 1);
   s_here[NAME_LEN - 1] = 0;
 }
-bool contractOffer(ContractKind prefer) { return roll(s_offer, prefer); }
+bool contractOffer(ContractKind prefer) {
+  // a delivery with nowhere to go here is not offered; something else is
+  for (int tries = 0; tries < 12; tries++) if (roll(s_offer, prefer)) return true;
+  return roll(s_offer, CK_BOUNTY);
+}
+
+void contractSetBand(uint8_t band) { s_band = band; }
+bool contractOfferDeep() { return roll(s_offer, (urand() & 1u) ? CK_DEEPRESCUE : CK_DEEPSCAN); }
+
+void contractSetLanes(const char *const *names, const uint8_t *depths, const uint8_t *visited, int n) {
+  s_laneN = 0;
+  for (int i = 0; i < n && s_laneN < 8; i++) {
+    LaneCand &c = s_lanes[s_laneN++];
+    strncpy(c.name, names[i], NAME_LEN - 1); c.name[NAME_LEN - 1] = 0;
+    c.depth = depths[i]; c.visited = visited[i];
+  }
+}
+
+bool contractDueHere(const char *place) { return s_c.live && hasDest(s_c.kind) && sameName(s_c.dest, place); }
+
+bool contractDeliverHere(const char *place) {
+  if (!contractDueHere(place)) return false;
+  s_c.progress = s_c.need;
+  complete();
+  return true;
+}
 
 bool contractAccept(const Contract &offer) {
   if (offer.kind == CK_NONE || s_c.live) return false;
@@ -212,10 +240,7 @@ void contractOnGate(const char *label, uint8_t band, bool unknown) {
   bool arrival = label && label[0];
   if ((s_c.kind == CK_SURVEY || s_c.kind == CK_TOUR) && arrival && unknown) { step(); return; }
   if (s_c.kind == CK_ESCORT && !arrival && band <= DEPTH_SHALLOW) { step(); return; }
-  if (hasDest(s_c.kind) && arrival && sameName(s_c.dest, label)) {
-    s_c.progress = s_c.need;
-    complete();
-  }
+  // deliveries are paid at the destination's dock (contractDeliverHere), not on arrival
 }
 
 void contractOnResolve(EncounterClass who, bool attacked, bool destroyedOther) {
@@ -224,6 +249,8 @@ void contractOnResolve(EncounterClass who, bool attacked, bool destroyedOther) {
       (who == ENC_PIRATE || who == ENC_SUBPIRATE || who == ENC_HOSTILE)) { complete(); return; }
   if (s_c.kind == CK_RESCUE && !attacked && (who == ENC_TRAVELER || who == ENC_ESCAPE_POD)) { complete(); return; }
   if (s_c.kind == CK_ESCORT && !attacked && (who == ENC_TRAVELER || who == ENC_MERCHANT)) { step(); return; }
+  if (s_c.kind == CK_DEEPRESCUE && !attacked && who == ENC_ESCAPE_POD && s_band >= 1) { complete(); return; }
+  if (s_c.kind == CK_DEEPSCAN && !attacked && who == ENC_ANOMALY && s_band >= 1) { step(); return; }
   if (s_c.kind == CK_GHOST && !attacked && who == ENC_SECURITY &&
       !holdIsHot() && sheet().heat[HEAT_SECURITY] <= 35) { complete(); return; }
 }
@@ -259,7 +286,7 @@ const char *contractCargo(ContractKind k) {
 
 const char *contractHint(const Contract &c) {
   switch (c.kind) {
-    case CK_HAUL: case CK_SUPPLY: case CK_SMUGGLE: case CK_MARKET: case CK_DEPTHRUN: return "travel there";
+    case CK_HAUL: case CK_SUPPLY: case CK_SMUGGLE: case CK_MARKET: case CK_DEPTHRUN: return "deliver at its dock";
     case CK_BOUNTY: return "destroy a pirate or hostile";
     case CK_RESCUE: return "rescue a pod or lost traveler";
     case CK_SURVEY: return "arrive somewhere unheard-of / mine";
@@ -267,6 +294,8 @@ const char *contractHint(const Contract &c) {
     case CK_ESCORT: return "shallow gates, friendly hails";
     case CK_GHOST: return "pass a security hail clean";
     case CK_LANDMARK: return "chart a deep landmark";
+    case CK_DEEPRESCUE: return "rescue a pod in subspace";
+    case CK_DEEPSCAN: return "scan anomalies in subspace";
     default: return "";
   }
 }

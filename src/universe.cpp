@@ -109,8 +109,8 @@ int landmarksForBand(uint8_t band, const Landmark **out, int maxOut) {
 // rumor, a job and a gate all agree. Most places are a shallow hop; a few
 // are genuinely deep.
 uint8_t placeDepth(const char *name) {
-  uint32_t h = 2166136261u ^ s_seed;
-  for (const char *c = name; c && *c; c++) { h ^= (uint8_t)*c; h *= 16777619u; }
+  uint32_t h = 2166136261u ^ sheet().universeSeed;   // fixed per universe; s_seed is the running RNG
+  for (const char *c = name; c && *c; c++) { h ^= (uint8_t)(*c >= 'a' && *c <= 'z' ? *c - 32 : *c); h *= 16777619u; }
   uint32_t r = mix(h) % 100;
   if (r < 60) return 1;
   if (r < 87) return 2;

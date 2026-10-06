@@ -7,6 +7,7 @@ int main() {
     // make the current place a known, rumored name so the hand is likely to offer it
     makeRealScene(sm::placeName(sm::urand(), 0, false), true);
     sm::knownGateAdd(hereName, 1); sm::rumorAdd(hereName, 1, 10);
+    boardLanes();
     for (int r = 0; r < 20; r++) { sm::contractOffer(); rolls++; if (sm::contractOfferPeek().dest[0] && sm::sameName(sm::contractOfferPeek().dest, hereName)) same++; }
   }
   printf("offers pointing at the current place: %d / %d\n", same, rolls);

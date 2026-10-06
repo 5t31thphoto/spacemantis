@@ -90,7 +90,7 @@ ResolveOut resolve(const ResolveIn &in) {
       uint8_t mine = p.cap[CAP_MINING];
       int yield = 1 + mine + (int)(urand() % 3);
       if (in.who == ENC_LANDMARK_GIANT) {
-        setFuel((uint16_t)(p.fuel + 8 + mine * 2));
+        setFuel((uint16_t)(p.fuel + 8 + mine * 2 + p.cap[CAP_FUELSYS] * 5));
         o.blurb = "scooped volatiles";
         o.xpTrack = CR_PROSPECTOR;
         o.xpAmount = (uint16_t)(4 + mine);

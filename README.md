@@ -26,10 +26,10 @@ SpaceMantis is an Elite-like game with the spreadsheet hidden underneath the fli
 - **Throttle:** the slider on the right edge. Drag it; there is a soft detent at cruise. Low is all stop, high is boost.
 - **Tap:** target anything in space. Its verbs appear beside it.
 - **A:** next target. **B:** re-center the tilt pose. **C:** snap the throttle to cruise.
-- **Hold B:** the status screen: a Liminar Transit pilot license (records the escape pod keeps: bank, ranks, fixed points) over a diagnostic of this hull (lost with it: condition, hold, fitted systems, depth rating). A visual reference only; any tap or button closes it, and the world waits.
-- **Hold C (on the status screen):** the pilot journal and your active lead. Hold C again for the license.
+- **Hold C:** the status screen: a Liminar Transit pilot license (records the escape pod keeps: bank, ranks, fixed points) over a diagnostic of this hull (lost with it: condition, hold, fitted systems, depth rating). A visual reference only; any tap or button closes it, and the world waits.
+- **Hold C again (on the status screen):** the pilot journal and your active lead. Hold C again for the license.
 - **Hold A:** the map, the pilot's memory of subspace lanes drawn as *the deep is small* (real space outside, the Deep Cove at the centre). Places you have been sit on the rim in network order; gates you have seen hang outside them; rumors are tethered to where you heard them; fixed points sit on their rings. Tap a place to trace the remembered way from here. Hold A again for *this system*: star, bodies, dock, every gate here and who built it, or in the deep what the scanner picks up. Visual reference only.
-- **Quick taps** of A and B act on release, so a hold never also does the tap.
+- **Quick taps** of A, B and C act on release, so a hold never also does the tap.
 - **Reticle / alignment:** light assistance exists only when nearly threading a gate or portal: a nudge, not an autopilot.
 - **Gate threading:** a gate only counts when the ship actually passes through the ring. Missing one does not select it: the ring stays where it is, so come round and fly it again.
 

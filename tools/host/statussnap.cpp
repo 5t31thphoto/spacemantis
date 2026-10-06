@@ -1,6 +1,6 @@
 #include "harness_core.inc"
-static bool qHold=false,qClick=false,qA=false;
-void M5Class::update() { g_ms += 8; BtnA.p=qA; BtnB.p=BtnC.p=false; BtnB.click=qClick; BtnB.hold=qHold; qA=qClick=qHold=false; Touch.d = TouchDetail{}; Imu.data.accel={0,0,1}; }
+static bool qHold=false,qHoldC=false,qClick=false,qA=false;
+void M5Class::update() { g_ms += 8; BtnA.p=qA; BtnB.p=BtnC.p=false; BtnB.click=qClick; BtnB.hold=qHold; BtnC.hold=qHoldC; BtnC.click=false; qA=qClick=qHold=qHoldC=false; Touch.d = TouchDetail{}; Imu.data.accel={0,0,1}; }
 int main() {
   setup(); bootOpen = false;
   sm::Pilot &p = sm::sheet();
@@ -9,7 +9,7 @@ int main() {
   p.cap[sm::CAP_WEAPONS] = 2; p.cap[sm::CAP_SCANNERS] = 2; p.cap[sm::CAP_BULKHEADS] = 3; p.cap[sm::CAP_STABILIZER] = 1; p.cap[sm::CAP_MINING] = 1;
   for (int i = 0; i < 5; i++) sm::discoverLandmark(sm::landmarkAt(i)->id);
   // hold B in flight -> status opens
-  qHold = true; updateInput();
+  qHoldC = true; updateInput();
   printf("statusOpen after hold: %d\n", statusOpen);
   g_log = fopen("snaps/20_status.log", "w"); draw(); fclose(g_log); g_log = nullptr;
   // world paused while open

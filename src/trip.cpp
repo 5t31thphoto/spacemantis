@@ -27,7 +27,12 @@ bool tripPortalGoesUp() { return s_t.ascending != 0; }
 
 uint8_t tripPortalFuel() {
   if (!s_t.active) return 0;
-  return s_t.ascending ? 3 : (uint8_t)(5 + 2 * s_t.layer);
+  int base = s_t.ascending ? 3 : 5 + 2 * s_t.layer;
+  // a better fuel system wastes less at every crossing (down to 60%)
+  float eff = 1.f - 0.07f * sheet().cap[CAP_FUELSYS];
+  if (eff < 0.6f) eff = 0.6f;
+  int cost = (int)(base * eff + 0.5f);
+  return (uint8_t)(cost < 2 ? 2 : cost);
 }
 
 Crossing tripCross() {

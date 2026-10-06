@@ -21,6 +21,8 @@ enum ContractKind : uint8_t {
   CK_GHOST,         // pass a security hail clean
   CK_DEPTHRUN,      // reach a deep-rated place
   CK_LANDMARK,      // chart a persistent place
+  CK_DEEPRESCUE,    // a deep outpost: recover a pod lost in subspace
+  CK_DEEPSCAN,      // a deep outpost: scan anomalies below the surface
   CK_COUNT
 };
 
@@ -39,6 +41,12 @@ struct Contract {
 
 void contractsInit();
 void contractSetHere(const char *place);   // current location: jobs never point here
+// The gates in this system: a delivery job picks one of these, never a new one.
+void contractSetLanes(const char *const *names, const uint8_t *depths, const uint8_t *visited, int n);
+bool contractDueHere(const char *place);      // a delivery is payable at this place's dock
+void contractSetBand(uint8_t band);           // where the pilot is: deep jobs only count below
+bool contractOfferDeep();                     // the board at a deep outpost
+bool contractDeliverHere(const char *place);  // pay it (at the dock)
 Contract &contract();
 bool contractOffer(ContractKind prefer = CK_NONE);  // roll a new offer onto station board
 bool contractAccept(const Contract &offer);          // false if hold or purse refuses

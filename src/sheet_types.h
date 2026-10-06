@@ -58,13 +58,14 @@ enum CapId : uint8_t {
   CAP_STABILIZER,    // mcguffin: +depth band help
   CAP_BULKHEADS,     // meta-material depth spine
   CAP_CLOAK,
+  CAP_FUELSYS,       // scoops: faster, richer; portals: cheaper
   CAP_COUNT
 };
 
 static inline const char *capName(CapId id) {
   static const char *n[] = {
     "weapons", "shields", "mining", "scanners",
-    "trailer", "stabilizer", "bulkheads", "cloak"
+    "trailer", "stabilizer", "bulkheads", "cloak", "fuel system"
   };
   return id < CAP_COUNT ? n[id] : "?";
 }

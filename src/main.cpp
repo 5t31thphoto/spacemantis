@@ -28,6 +28,7 @@
 #include "savefile.h"
 #include <Preferences.h>
 #include "ship_art.h"
+#include "logos_art.h"
 #include "trip.h"
 #include "sheet.h"
 #include "universe.h"
@@ -161,7 +162,7 @@ static inline bool onScreen(float sx, float sy, float m = 0) { return sx >= -m &
 // ============================================================
 struct Mesh {
   uint8_t nv = 0, nt = 0, ne = 0;
-  V3 v[14];
+  V3 v[18];
   uint8_t t[40][3];
   V3 n[40];
   uint8_t e[64][4];   // a, b, face0, face1 (255 = none)
@@ -171,7 +172,10 @@ static bool faceHas(const Mesh &m, int f, uint8_t a, uint8_t b) {
   bool hb = m.t[f][0] == b || m.t[f][1] == b || m.t[f][2] == b;
   return ha && hb;
 }
-static void buildHull(Mesh &m, const V3 *pts, int n) {
+static void buildHull(Mesh &m, const V3 *pts0, int n, bool jitter = false) {
+  // jitter: a hair of noise so big flat faces (hexagons, octagons) triangulate once, not every way
+  V3 pts[18];
+  for (int i = 0; i < n; i++) pts[i] = jitter ? pts0[i] + V3{rf(-1e-3f, 1e-3f), rf(-1e-3f, 1e-3f), rf(-1e-3f, 1e-3f)} : pts0[i];
   m.nv = (uint8_t)n; m.nt = 0; m.ne = 0;
   for (int i = 0; i < n; i++) m.v[i] = pts[i];
   for (int i = 0; i < n; i++)
@@ -211,7 +215,8 @@ static void buildHull(Mesh &m, const V3 *pts, int n) {
     }
 }
 
-enum MeshId : uint8_t { M_STATION = 0, M_COBRA, M_VIPER, M_SIDEWINDER, M_SHUTTLE, M_KRAIT, M_POD, M_TETRA, M_GHOST, M_ROCK0, M_COUNT = M_ROCK0 + 6 };
+enum MeshId : uint8_t { M_STATION = 0, M_COBRA, M_VIPER, M_SIDEWINDER, M_SHUTTLE, M_KRAIT, M_POD, M_TETRA, M_GHOST,
+                        M_HEXCORE, M_RINGSEG, M_OCT, M_OCTWIDE, M_MODULE, M_PANEL, M_ROCK0, M_COUNT = M_ROCK0 + 6 };
 static Mesh meshes[M_COUNT];
 
 static void initMeshes() {
@@ -237,6 +242,33 @@ static void initMeshes() {
   // ghost fleet: long, thin, too quiet
   const V3 ghost[] = {{0, 0, 2.2f}, {-0.35f, 0, -1.6f}, {0.35f, 0, -1.6f}, {0, 0.22f, -1.2f}, {0, -0.22f, -1.2f}, {-0.9f, 0.02f, -0.4f}, {0.9f, 0.02f, -0.4f}};
   buildHull(meshes[M_GHOST], ghost, 7);
+  // station parts. Liminar hexcore: a faceted hex body, narrow at both ends
+  {
+    V3 p[18];
+    for (int i = 0; i < 6; i++) {
+      float a = i * 1.0471976f + 0.5235988f;
+      p[i] = {0.52f * cosf(a), 0.52f * sinf(a), 0.86f};
+      p[i + 6] = {0.96f * cosf(a), 0.96f * sinf(a), 0.12f};
+      p[i + 12] = {0.62f * cosf(a), 0.62f * sinf(a), -0.78f};
+    }
+    buildHull(meshes[M_HEXCORE], p, 18, true);
+  }
+  { // a ring segment: long along its own forward (the ring's tangent)
+    const V3 b[] = {{-0.17f, -0.13f, -0.30f}, {0.17f, -0.13f, -0.30f}, {-0.17f, 0.13f, -0.30f}, {0.17f, 0.13f, -0.30f},
+                    {-0.17f, -0.13f, 0.30f}, {0.17f, -0.13f, 0.30f}, {-0.17f, 0.13f, 0.30f}, {0.17f, 0.13f, 0.30f}, {0.f, 0.19f, 0.f}};
+    buildHull(meshes[M_RINGSEG], b, 9, true);
+  }
+  for (int w = 0; w < 2; w++) {   // octagonal drums for the spindle
+    V3 p[16]; float r = w ? 0.5f : 0.34f, h = w ? 0.16f : 0.22f;
+    for (int i = 0; i < 8; i++) { float a = i * 0.7853982f + 0.3926991f; p[i] = {r * cosf(a), r * sinf(a), h}; p[i + 8] = {r * cosf(a), r * sinf(a), -h}; }
+    buildHull(meshes[w ? M_OCTWIDE : M_OCT], p, 16, true);
+  }
+  { const V3 b[] = {{-0.3f, -0.22f, -0.42f}, {0.3f, -0.22f, -0.42f}, {-0.3f, 0.22f, -0.42f}, {0.3f, 0.22f, -0.42f},
+                    {-0.3f, -0.22f, 0.42f}, {0.3f, -0.22f, 0.42f}, {-0.24f, 0.26f, 0.36f}, {0.24f, 0.26f, 0.36f}};
+    buildHull(meshes[M_MODULE], b, 8, true); }
+  { const V3 b[] = {{-0.6f, -0.02f, -0.22f}, {0.6f, -0.02f, -0.22f}, {-0.6f, 0.02f, -0.22f}, {0.6f, 0.02f, -0.22f},
+                    {-0.6f, -0.02f, 0.22f}, {0.6f, -0.02f, 0.22f}, {-0.6f, 0.02f, 0.22f}, {0.6f, 0.02f, 0.22f}};
+    buildHull(meshes[M_PANEL], b, 8, true); }
   const float g = 1.618f;
   V3 ico[12] = {{-1, g, 0}, {1, g, 0}, {-1, -g, 0}, {1, -g, 0}, {0, -1, g}, {0, 1, g}, {0, -1, -g}, {0, 1, -g}, {g, 0, -1}, {g, 0, 1}, {-g, 0, -1}, {-g, 0, 1}};
   for (int r = 0; r < 6; r++) {
@@ -251,7 +283,8 @@ static void initMeshes() {
 // ============================================================
 enum OKind : uint8_t { K_NONE = 0, K_SHIP, K_STATION, K_DOCKGATE, K_ROCK, K_BODY, K_POD, K_WRECK, K_ARTIFACT, K_ANOMALY, K_GATE, K_PORTAL, K_LANDMARK };
 enum GateFlags : uint8_t { GF_DEST = 1, GF_CHAIN = 2, GF_JOB = 4, GF_RUMOR = 8, GF_UNKNOWN = 16, GF_FIXED = 32, GF_KNOWN = 64, GF_LOCALNAME = 128 };
-enum BodyType : uint8_t { BT_GIANT = 0, BT_ROCKY, BT_HOLE, BT_WRONGSTAR };
+enum BodyType : uint8_t { BT_GIANT = 0, BT_ROCKY, BT_HOLE, BT_WRONGSTAR, BT_STAR, BT_REDGIANT, BT_WHITEDWARF, BT_NEUTRON };
+static inline bool isStarBody(uint8_t t) { return t == BT_STAR || t == BT_REDGIANT || t == BT_WHITEDWARF || t == BT_NEUTRON; }
 
 struct Obj {
   uint8_t kind, enc, mesh, gflags, depth, bodyType, uses;
@@ -290,7 +323,7 @@ static float surfaceDist(const Obj &o) { return distTo(o) - o.radius; }
 // ============================================================
 static V3 sunDir{0.4f, 0.3f, 0.86f};
 static uint16_t sunCol = 0;
-static uint8_t sunType = 1;      // 0 orange, 1 yellow-white, 2 blue-white
+static uint8_t sunType = 2;      // 0 red dwarf, 1 orange, 2 yellow, 3 white, 4 blue giant, 5 red giant, 6 white dwarf
 static V3 layerLight{0.3f, 0.8f, 0.5f};
 static char hereName[24] = "";     // what locals call this place
 static int target = -1;            // targeted object
@@ -360,8 +393,11 @@ static void buildSky(uint32_t seed) {
   for (; nb < NBLOBS; nb++) blobs[nb] = {V3{0, 0, 1}, 0, 0};
   sunDir = randDir();
   float st = rf(0, 1);
-  sunCol = st < 0.3f ? rgb(255, 200, 140) : st < 0.8f ? rgb(255, 244, 220) : rgb(200, 220, 255);
-  sunType = st < 0.3f ? 0 : (st < 0.8f ? 1 : 2);
+  // the local star: mostly ordinary, sometimes not
+  sunType = st < 0.18f ? 0 : st < 0.40f ? 1 : st < 0.62f ? 2 : st < 0.76f ? 3 : st < 0.84f ? 4 : st < 0.93f ? 5 : 6;
+  static const uint16_t starCols[7] = {rgb(255, 120, 70), rgb(255, 172, 100), rgb(255, 232, 175), rgb(248, 248, 255),
+                                       rgb(165, 195, 255), rgb(255, 105, 60), rgb(200, 220, 255)};
+  sunCol = starCols[sunType];
   rngState = keep;
 }
 
@@ -489,19 +525,86 @@ static void drawNebulae() {
   }
 }
 
-static void drawSun() {
-  float sx, sy;
-  if (!projectDir(sunDir, sx, sy) || !onScreen(sx, sy, 60)) return;
-  int x = (int)sx, y = (int)sy;
-  int r1, g1, b1; unrgb(sunCol, r1, g1, b1);
-  for (int i = 0; i < 6; i++) {
-    float k = (i + 1) / 6.f;
-    cv.fillCircle(x, y, 30 - i * 5, rgb((int)(r1 * k * k * 0.9f), (int)(g1 * k * k * 0.8f), (int)(b1 * k * k * 0.7f)));
+// ============================================================
+//  stars: light, not paint. A white-hot core, a halo that falls off like
+//  light does (tinted by temperature), and the camera's diffraction spikes.
+// ============================================================
+static float glowWhite = 1.f;   // how far the light runs to white near the core (cool giants: little)
+static uint16_t glowColor(uint16_t col, float k) {
+  // k: 1 at the core edge -> 0 far out. Far: the star's hue, dim. Near: toward white.
+  int r, g, b; unrgb(col, r, g, b);
+  float w = k * k * k * glowWhite;
+  return rgb((int)(r * k + (255 - r) * w), (int)(g * k + (255 - g) * w), (int)(b * k + (255 - b) * w));
+}
+
+static void drawStarGlow(float x, float y, float core, uint16_t col, float halo, float spike, int nSpikes, float spikeTurn = 0.f) {
+  if (!onScreen(x, y, halo + spike)) return;
+  if (halo > 110.f) halo = 110.f;   // the frame budget: big halos are the costliest thing we draw
+  // halo, outside in: each ring a little brighter, so the light reads as one smooth falloff
+  for (float r = halo; r > core; r -= fmaxf(1.f, r * (r > 50.f ? 0.12f : 0.085f))) {
+    float u = r / halo;
+    float k = powf(core / r, 1.15f) * (1.f - u * u * u);   // light thins to nothing at the rim: no disk edge
+    cv.fillCircle((int)x, (int)y, (int)r, glowColor(col, k * 0.95f));
   }
-  cv.fillCircle(x, y, 4, rgb(255, 255, 255));
-  for (int i = 0; i < 6; i++) {
-    float a = i * 1.047f + tNow * 0.03f;
-    cv.drawLine(x, y, x + (int)(cosf(a) * 46), y + (int)(sinf(a) * 46), shade(sunCol, 0.35f));
+  // diffraction spikes: thin, bright at the root, fading out
+  for (int i = 0; i < nSpikes; i++) {
+    float a = spikeTurn + i * 3.1415927f / (nSpikes / 2 > 0 ? nSpikes / 2 : 1);
+    float ca = cosf(a), sa = sinf(a);
+    for (int seg = 0; seg < 3; seg++) {
+      float r0 = core + spike * seg / 3.f, r1 = core + spike * (seg + 1) / 3.f;
+      uint16_t c = glowColor(col, 0.9f - seg * 0.28f);
+      cv.drawLine((int)(x + ca * r0), (int)(y + sa * r0), (int)(x + ca * r1), (int)(y + sa * r1), c);
+      if (seg == 0) cv.drawLine((int)(x + ca * r0 - sa), (int)(y + sa * r0 + ca), (int)(x + ca * r1 - sa), (int)(y + sa * r1 + ca), glowColor(col, 0.55f));
+    }
+  }
+  cv.fillCircle((int)x, (int)y, (int)fmaxf(1.f, core), rgb(255, 255, 255));
+}
+
+// a star's face, seen up close: limb darkening and slow granulation
+static void drawStarDisk(float sx, float sy, float R, uint16_t col, const Obj *b, bool mottled) {
+  int bs = R < 30 ? 2 : (R < 90 ? 3 : 4);
+  cv.fillCircle((int)sx, (int)sy, (int)R, shade(col, mottled ? 0.55f : 0.9f));   // under the blocks: no gaps at the limb
+  int x0 = (int)clampf(sx - R, 0, W), x1 = (int)clampf(sx + R, 0, W), y0 = (int)clampf(sy - R, 0, H), y1 = (int)clampf(sy + R, 0, H);
+  int r1, g1, b1; unrgb(col, r1, g1, b1);
+  float invR = 1.f / R;
+  for (int y = y0; y < y1; y += bs) {
+    float ny = (y + bs * 0.5f - sy) * invR;
+    for (int x = x0; x < x1; x += bs) {
+      float nx = (x + bs * 0.5f - sx) * invR;
+      float q = 1.f - nx * nx - ny * ny;
+      if (q <= 0) continue;
+      float mu = sqrtf(q);
+      float gran = 1.f;
+      if (b) {
+        V3 nw = shipB.toWorld(V3{nx, -ny, -mu});
+        float lat = dot(nw, b->o.u), lon = dot(nw, b->o.r);
+        gran = mottled ? 0.72f + 0.28f * fsin(lat * 9.f + fsin(lon * 7.f + tNow * 0.2f) * 2.f) * fsin(lon * 11.f - tNow * 0.15f)
+                       : 0.95f + 0.05f * fsin(lat * 23.f + fsin(lon * 17.f + tNow * 0.3f) * 1.6f) * fsin(lon * 19.f - lat * 7.f);   // cells, not rings
+      }
+      float k = mottled ? (0.45f + 0.55f * mu) * gran : (0.78f + 0.22f * mu) * gran;
+      float hot = mottled ? 0.f : 0.35f + mu * mu * 0.5f;   // a hot star's face burns toward white
+      cv.fillRect(x, y, bs, bs, rgb((int)(r1 * k + (255 - r1) * hot), (int)(g1 * k + (255 - g1) * hot), (int)(b1 * k + (255 - b1) * hot)));
+    }
+  }
+}
+
+static bool nearStar = false;   // this system's star is a body you can fly to (drawn with the objects)
+static void drawSun() {
+  if (nearStar) return;
+  float sx, sy;
+  if (!projectDir(sunDir, sx, sy) || !onScreen(sx, sy, 90)) return;
+  //                       red dwarf  orange  yellow  white  blue    red giant  white dwarf
+  static const float core[7]  = {2.5f, 3.f,   3.5f,  3.5f,  4.5f,   0.f,      1.5f};
+  static const float halo[7]  = {20.f, 28.f,  34.f,  36.f,  52.f,   44.f,     15.f};
+  static const float spike[7] = {16.f, 26.f,  34.f,  40.f,  58.f,   10.f,     64.f};
+  float tw = 1.f + 0.03f * fsin(tNow * 7.f);
+  if (sunType == 5) {
+    // a red giant fills a patch of sky: a dim, boiling disk inside a wide red glow
+    glowWhite = 0.15f; drawStarGlow(sx, sy, 16.f, sunCol, halo[5], spike[5], 4); glowWhite = 1.f;
+    drawStarDisk(sx, sy, 17.f, sunCol, nullptr, true);
+  } else {
+    drawStarGlow(sx, sy, core[sunType] * tw, sunCol, halo[sunType] * tw, spike[sunType], 4, 0.785f);
+    if (sunType == 4 || sunType == 6) drawStarGlow(sx, sy, core[sunType], sunCol, core[sunType] + 1.f, spike[sunType] * 0.55f, 4, 0.f);
   }
   // lens flare ghosts along the line through the screen centre
   float fx = 160 - sx, fy = 120 - sy;
@@ -571,6 +674,52 @@ static void drawBody(const Obj &b) {
   float sx, sy, z;
   if (!project(b.p, sx, sy, z)) return;
   float R = b.radius * FOCAL * fovPulse / z;
+  if (isStarBody(b.bodyType)) {
+    if (b.bodyType == BT_NEUTRON) {
+      // a dead star's pinprick, and the two beams it sweeps across everything
+      float a = tNow * 5.5f;
+      for (int side = -1; side <= 1; side += 2) {
+        V3 dir = norm(b.o.u * cosf(0.5f) + (b.o.r * cosf(a) + b.o.f * sinf(a)) * sinf(0.5f)) * (float)side;
+        float ex, ey, ez;
+        if (project(b.p + dir * b.radius * 60.f, ex, ey, ez)) {
+          cv.drawLine((int)sx, (int)sy, (int)ex, (int)ey, rgb(200, 170, 255));
+          cv.drawLine((int)sx + 1, (int)sy, (int)ex + 1, (int)ey, rgb(110, 80, 200));
+        }
+      }
+      drawStarGlow(sx, sy, fmaxf(1.5f, R), rgb(210, 190, 255), fmaxf(10.f, R * 4.f), 30.f, 4, tNow * 0.3f);
+      return;
+    }
+    bool giant = b.bodyType == BT_REDGIANT;
+    float halo = clampf(R * (giant ? 1.35f : b.bodyType == BT_WHITEDWARF ? 6.f : 2.1f), R + 4.f, 150.f);
+    float spike = b.bodyType == BT_WHITEDWARF ? 70.f : (giant ? 0.f : clampf(R * 1.3f, 20.f, 90.f));
+    if (R < 5.f) { drawStarGlow(sx, sy, fmaxf(1.5f, R), b.col, halo, spike, 4, 0.785f); return; }
+    glowWhite = giant ? 0.15f : 1.f;
+    if (halo > R + 6.f && R < 100.f) drawStarGlow(sx, sy, R, b.col, halo, 0.f, 0);
+    else {   // too big for a filled halo: a corona of thin rings beyond the limb (cheap, and still light)
+      for (int i = 16; i >= 1; i--) cv.drawCircle((int)sx, (int)sy, (int)(R + i * 1.6f), glowColor(b.col, 0.95f * (1.f - i / 17.f) * (1.f - i / 17.f)));
+    }
+    glowWhite = 1.f;
+    drawStarDisk(sx, sy, R, b.col, &b, giant);
+    if (spike > 0.f && R < 60.f) drawStarGlow(sx, sy, 2.f, b.col, 0.f, spike + R, 4, 0.785f);
+    return;
+  }
+  if (b.bodyType == BT_WRONGSTAR && onScreen(sx, sy, R * 3.f)) {
+    // a star that is wrong: its light runs inward, its colors will not hold still,
+    // and it has an odd number of spikes, which no lens can make
+    float halo = clampf(R * 2.4f, 12.f, 150.f);
+    for (float r = halo; r > R; r -= fmaxf(1.f, r * 0.09f)) {
+      float u = r / halo, k = powf(R / r, 1.3f) * (1.f - u * u * u);
+      cv.fillCircle((int)sx, (int)sy, (int)r, hsv(layerHue(layer) + 150.f + r * 2.5f - tNow * 40.f, 0.7f, k * 0.85f));
+    }
+    for (int i = 0; i < 5; i++) {
+      float a = tNow * 0.4f + i * 1.2566371f;
+      cv.drawLine((int)sx, (int)sy, (int)(sx + cosf(a) * (R + halo)), (int)(sy + sinf(a) * (R + halo)), hsv(layerHue(layer) + i * 50.f, 0.6f, 0.95f));
+    }
+    cv.fillCircle((int)sx, (int)sy, (int)R, rgb(0, 0, 0));
+    cv.drawCircle((int)sx, (int)sy, (int)R, rgb(255, 255, 255));
+    cv.drawCircle((int)sx, (int)sy, (int)R - 1, hsv(tNow * 90.f, 0.5f, 1.f));
+    return;
+  }
   if (R < 1.5f) { cv.drawPixel((int)sx, (int)sy, shade(b.col, 0.8f)); return; }
   if (!onScreen(sx, sy, R)) return;
   if (b.bodyType == BT_HOLE) {
@@ -626,9 +775,35 @@ static void drawBody(const Obj &b) {
   }
 }
 
+// Livery for the next drawMesh call: side faces take the accent, the forward-top faces the canopy.
+static uint16_t meshAccent = 0, meshCanopy = 0;
+static float meshAmbient = 0.16f;   // floor light: stations are floodlit, ships readable, rocks honest
+// Surface detail without geometry: 1 = panel seams + greebles (ships), 2 = also lit windows + an emblem (stations)
+static void drawDecal(int logo, V3 up);
+static uint8_t meshDetail = 0, meshEmblem = 0;
+static uint16_t meshWindow = 0;
+// 7x7 maker's marks. Liminar: an open ring. Portex: a doorway. MaltaPlex: a cross. Freehold: a stake.
+// Deseret: a beehive.
+static const uint8_t EMBLEMS[6][7] = {
+  {0x1C, 0x22, 0x41, 0x41, 0x41, 0x22, 0x14}, {0x7F, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41},
+  {0x08, 0x08, 0x08, 0x7F, 0x08, 0x08, 0x08}, {0x7E, 0x40, 0x40, 0x7C, 0x40, 0x40, 0x40},
+  {0x1C, 0x3E, 0x00, 0x7F, 0x00, 0x7F, 0x36}, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+static void drawEmblem(int cx, int cy, int which, int sc, uint16_t col) {
+  if (which < 1 || which > 5) return;
+  const uint8_t *e = EMBLEMS[which - 1];
+  for (int r = 0; r < 7; r++) for (int c = 0; c < 7; c++)
+    if (e[r] & (0x40 >> c)) cv.fillRect(cx + (c - 3) * sc + 1, cy + (r - 3) * sc + 1, sc, sc, rgb(12, 10, 16));   // a shadow: reads on any hull
+  for (int r = 0; r < 7; r++) for (int c = 0; c < 7; c++)
+    if (e[r] & (0x40 >> c)) cv.fillRect(cx + (c - 3) * sc, cy + (r - 3) * sc, sc, sc, col);
+}
+static float emblemArea = 0.f, emblemX = 0.f, emblemY = 0.f;
+static V3 decalA, decalB, decalC, decalN;   // the chosen face, in world space
+static float decalK = 1.f;                  // and how it is lit
+static V3 decalCenter; static float decalSize = 0.f;   // the whole flat panel the face belongs to
+static int decalFace = -1;
 static bool drawMesh(const Obj &ob, const Mesh &m, float scale, uint16_t base, uint16_t edgeCol, bool solid, float &outR) {
-  float sx[14], sy[14], cx, cy, zc;
-  V3 wv[14];
+  float sx[18], sy[18], cx, cy, zc;
+  V3 wv[18];
   outR = 0;
   if (!project(ob.p, cx, cy, zc)) return false;
   outR = scale * FOCAL / zc;
@@ -645,10 +820,55 @@ static bool drawMesh(const Obj &ob, const Mesh &m, float scale, uint16_t base, u
     V3 nw = ob.o.toWorld(m.n[f]);
     vis[f] = dot(nw, shipPos - wv[m.t[f][0]]) > 0;
     if (!vis[f] || !solid) continue;
-    float k = 0.16f + 0.84f * clampf(dot(nw, light), 0.f, 1.f);
+    float k = meshAmbient + (1.f - meshAmbient) * clampf(dot(nw, light), 0.f, 1.f);
     if (layer > 0) k = 0.3f + 0.7f * k;
+    uint16_t fc = base;
+    const V3 &mn = m.n[f];
+    if (meshCanopy && mn.z > 0.3f && mn.y > 0.35f) { fc = meshCanopy; k = 0.55f + 0.45f * k; }   // canopies glow a little
+    else if (meshAccent && fabsf(mn.x) > 0.72f) fc = meshAccent;
     cv.fillTriangle((int)sx[m.t[f][0]], (int)sy[m.t[f][0]], (int)sx[m.t[f][1]], (int)sy[m.t[f][1]],
-                    (int)sx[m.t[f][2]], (int)sy[m.t[f][2]], shade(base, k));
+                    (int)sx[m.t[f][2]], (int)sy[m.t[f][2]], shade(fc, k));
+    if (meshDetail) {
+      int a0 = m.t[f][0], a1 = m.t[f][1], a2 = m.t[f][2];
+      float ux = sx[a1] - sx[a0], uy = sy[a1] - sy[a0], vx = sx[a2] - sx[a0], vy = sy[a2] - sy[a0];
+      float area = fabsf(ux * vy - uy * vx) * 0.5f;
+      if (area > 40.f) {
+        uint16_t dk = shade(fc, k * 0.62f), lt = shade(fc, fminf(1.2f, k * 1.3f));
+        auto at = [&](float b1, float b2, float &x, float &y) { x = sx[a0] + ux * b1 + vx * b2; y = sy[a0] + uy * b1 + vy * b2; };
+        float px, py, qx, qy;
+        at(0.f, 0.4f, px, py); at(0.6f, 0.4f, qx, qy);                       // a panel seam across the face
+        cv.drawLine((int)px, (int)py, (int)qx, (int)qy, dk);
+        if (area > 160.f) {
+          at(0.f, 0.72f, px, py); at(0.28f, 0.72f, qx, qy); cv.drawLine((int)px, (int)py, (int)qx, (int)qy, dk);
+          at(0.22f, 0.18f, px, py); cv.fillRect((int)px, (int)py, 2, 1, lt);  // greebles
+          at(0.5f, 0.12f, px, py); cv.drawPixel((int)px, (int)py, lt);
+        }
+        if (meshDetail == 2 && meshWindow && area > 200.f && (f % 3) == 0) {   // a row of lit windows
+          for (float b = 0.1f; b < 0.62f; b += 0.08f) {
+            at(b, 0.55f, px, py);
+            uint32_t hsh = (uint32_t)(f * 31 + (int)(b * 100)) * 2654435761u;
+            if ((hsh >> 27) & 3) cv.drawPixel((int)px, (int)py, ((hsh >> 25) & 1) ? meshWindow : shade(meshWindow, 0.5f));
+          }
+        }
+        // emblems go on a side face: the front carries the dock
+        if (meshEmblem && m.n[f].z < 0.8f && area > emblemArea) {
+          emblemArea = area; emblemX = sx[a0] + ux * 0.33f + vx * 0.33f; emblemY = sy[a0] + uy * 0.33f + vy * 0.33f;
+          decalA = wv[a0]; decalB = wv[a1]; decalC = wv[a2]; decalN = ob.o.toWorld(m.n[f]); decalK = k; decalFace = f;
+        }
+      }
+    }
+  }
+  if (meshEmblem && decalFace >= 0 && decalFace < m.nt) {
+    // a flat panel is stored as several triangles: size the decal to the whole panel
+    V3 acc{0, 0, 0}; float tot = 0.f;
+    for (int f = 0; f < m.nt; f++) {
+      if (!vis[f] || dot(m.n[f], m.n[decalFace]) < 0.995f) continue;
+      V3 A = wv[m.t[f][0]], B = wv[m.t[f][1]], C = wv[m.t[f][2]];
+      float ar = len(cross(B - A, C - A)) * 0.5f;
+      acc += (A + B + C) * (ar / 3.f); tot += ar;
+    }
+    if (tot > 0.f) { decalCenter = acc * (1.f / tot); decalSize = sqrtf(tot) * 0.62f; }
+    decalFace = -1;
   }
   for (int e = 0; e < m.ne; e++) {
     bool v0 = vis[m.e[e][2]], v1 = m.e[e][3] != 255 && vis[m.e[e][3]];
@@ -656,6 +876,211 @@ static bool drawMesh(const Obj &ob, const Mesh &m, float scale, uint16_t base, u
     cv.drawLine((int)sx[m.e[e][0]], (int)sy[m.e[e][0]], (int)sx[m.e[e][1]], (int)sy[m.e[e][1]], (v0 || v1) ? edgeCol : shade(edgeCol, 0.35f));
   }
   return true;
+}
+
+// ============================================================
+//  stations: built from parts, dressed in the colours of whoever built them
+// ============================================================
+enum StationStyle : uint8_t { SS_HEXCORE = 0, SS_RING, SS_SPINDLE, SS_OUTPOST, SS_CORIOLIS };
+enum Brand : uint8_t { BR_LIMINAR = 0, BR_PORTEX, BR_MALTAPLEX, BR_DESERET, BR_FREEHOLD };
+struct BrandLook { const char *name; uint16_t base, accent, light; };
+static const BrandLook &brandLook(uint8_t b) {
+  // colours taken from the corporate logo sheet
+  static const BrandLook looks[5] = {
+    {"LIMINAR", rgb(200, 206, 210), rgb(36, 168, 186), rgb(140, 240, 255)},
+    {"PORTEX", rgb(150, 162, 180), rgb(46, 74, 132), rgb(200, 230, 255)},
+    {"MALTAPLEX", rgb(178, 180, 184), rgb(232, 158, 40), rgb(255, 214, 120)},
+    {"DESERET", rgb(214, 206, 180), rgb(122, 138, 78), rgb(255, 236, 170)},
+    {"FREEHOLD", rgb(120, 124, 118), rgb(178, 98, 62), rgb(255, 170, 90)}};
+  return looks[b < 5 ? b : 4];
+}
+
+struct StationPart { uint8_t mesh; V3 off; float yaw, roll, scale; bool accent; };
+
+static int stationParts(uint8_t style, StationPart *out) {
+  int n = 0;
+  auto add = [&](uint8_t m, V3 o, float yaw, float roll, float sc, bool acc) { out[n++] = {m, o, yaw, roll, sc, acc}; };
+  switch (style) {
+    case SS_HEXCORE:
+      add(M_HEXCORE, V3{0, 0, 0}, 0, 0, 1.f, false);
+      for (int i = 0; i < 6; i++) { float a = i * 1.0471976f + 0.5235988f; add(M_MODULE, V3{cosf(a) * 0.98f, sinf(a) * 0.98f, 0.1f}, 0, a, 0.2f, true); }
+      add(M_PANEL, V3{-1.75f, 0, -0.35f}, 0, 0, 0.95f, false);
+      add(M_PANEL, V3{1.75f, 0, -0.35f}, 0, 0, 0.95f, false);
+      break;
+    case SS_RING:
+      for (int i = 0; i < 14; i++) {
+        float a = i * 0.4487989f;
+        add(M_RINGSEG, V3{cosf(a), sinf(a), 0}, 0, a, 1.f, (i % 7) == 0);
+      }
+      for (int i = 0; i < 4; i++) { float a = i * 1.5707963f + 0.785f; add(M_MODULE, V3{cosf(a) * 1.22f, sinf(a) * 1.22f, 0}, 0, a, 0.24f, true); }
+      break;
+    case SS_SPINDLE:
+      for (int i = 0; i < 5; i++) add((i & 1) ? M_OCT : M_OCTWIDE, V3{0, 0, -1.55f + i * 0.46f}, 0, i * 0.2f, 1.f, (i & 1) == 0);
+      add(M_OCT, V3{0, 0, 0.62f}, 0, 0, 0.75f, true);
+      add(M_PANEL, V3{0, 0.95f, -0.85f}, 0, 1.5707963f, 0.8f, false);
+      add(M_PANEL, V3{0, -0.95f, -0.85f}, 0, 1.5707963f, 0.8f, false);
+      break;
+    case SS_OUTPOST:
+      add(M_MODULE, V3{0, 0, 0}, 0, 0, 1.f, false);
+      add(M_MODULE, V3{0, -0.42f, -0.55f}, 1.5707963f, 0, 0.75f, true);
+      add(M_PANEL, V3{-1.1f, 0.15f, -0.2f}, 0, 0.25f, 0.8f, false);
+      add(M_PANEL, V3{1.1f, 0.15f, -0.2f}, 0, -0.25f, 0.8f, false);
+      break;
+    default:
+      add(M_STATION, V3{0, 0, 0}, 0, 0, 1.f, false);
+      break;
+  }
+  return n;
+}
+
+// where the dock gate sits in front of a station, in units of its radius
+static float stationDockFront(uint8_t style) {
+  switch (style) { case SS_RING: return 0.f; case SS_SPINDLE: return 1.35f; case SS_OUTPOST: return 1.9f; case SS_HEXCORE: return 1.75f; default: return 1.73f; }
+}
+
+// each class wears a two-tone hull and a lit canopy, like ours, in its own colours
+static bool liveryOn = true;
+// returns the hull colour (0 = keep the ship's own)
+static uint16_t shipLivery(const Obj &o) {
+  meshAccent = meshCanopy = 0;
+  if (!liveryOn) return 0;
+  if (o.ghost) { meshAccent = rgb(26, 30, 36); meshCanopy = rgb(190, 235, 225); return rgb(92, 100, 110); }
+  switch (o.enc) {
+    case sm::ENC_TRAVELER:  meshAccent = rgb(0, 115, 115);  meshCanopy = rgb(150, 225, 30);  return rgb(214, 204, 178);
+    case sm::ENC_MERCHANT:  meshAccent = rgb(214, 132, 38); meshCanopy = rgb(255, 214, 120); return rgb(226, 218, 196);
+    case sm::ENC_SECURITY:  meshAccent = rgb(40, 70, 150);  meshCanopy = rgb(140, 220, 255); return rgb(222, 228, 236);
+    case sm::ENC_PIRATE:    meshAccent = rgb(34, 28, 28);   meshCanopy = rgb(255, 70, 50);   return rgb(178, 92, 64);
+    case sm::ENC_SUBPIRATE: meshAccent = rgb(93, 0, 93);    meshCanopy = rgb(255, 120, 255); return rgb(132, 116, 150);
+    default: return 0;
+  }
+}
+
+static void drawStationObj(const Obj &st) {
+  uint8_t style = st.bodyType;
+  const BrandLook &bl = brandLook(st.uses);
+  StationPart parts[24];
+  int n = stationParts(style, parts);
+  // world placement for each part, then far to near
+  Obj tmp[24]; float pz[24]; int ord[24];
+  for (int i = 0; i < n; i++) {
+    const StationPart &pp = parts[i];
+    tmp[i] = st;
+    tmp[i].p = st.p + st.o.toWorld(pp.off * st.radius);
+    Basis b = st.o;
+    if (pp.roll != 0.f) b.roll(pp.roll);
+    if (pp.yaw != 0.f) b.yaw(pp.yaw);
+    if (pp.mesh == M_RINGSEG) {   // segments run along the ring's tangent, their top facing outward
+      V3 radial = norm(tmp[i].p - st.p);
+      b = Basis::facing(norm(cross(st.o.f, radial)), radial);
+    }
+    b.fix();
+    tmp[i].o = b;
+    V3 c = shipB.toLocal(tmp[i].p - shipPos);
+    pz[i] = c.z; ord[i] = i;
+  }
+  for (int i = 1; i < n; i++) { int k = ord[i]; int j = i - 1; while (j >= 0 && pz[ord[j]] < pz[k]) { ord[j + 1] = ord[j]; j--; } ord[j + 1] = k; }
+  float outR;
+  for (int q = 0; q < n; q++) {
+    int i = ord[q];
+    const StationPart &pp = parts[i];
+    meshAccent = (pp.accent || style == SS_RING) ? 0 : bl.accent;
+    meshAmbient = 0.45f;
+    meshDetail = pp.mesh == M_PANEL ? 1 : 2; meshWindow = bl.light;
+    bool core = pp.mesh == M_HEXCORE || (style == SS_SPINDLE && pp.mesh == M_OCTWIDE && i == 2) || (style == SS_OUTPOST && i == 0) || (style == SS_RING && pp.accent && pp.mesh == M_RINGSEG);
+    meshEmblem = core ? (uint8_t)(st.uses + 1) : 0;
+    if (core) { emblemArea = 0.f; decalSize = 0.f; }
+    uint16_t base = pp.accent ? bl.accent : (pp.mesh == M_PANEL ? rgb(40, 52, 84) : bl.base);
+    uint16_t edge = pp.mesh == M_PANEL ? rgb(90, 120, 170) : shade(base, 1.25f);
+    drawMesh(tmp[i], meshes[pp.mesh], st.radius * pp.scale, base, edge, true, outR);
+    if (meshEmblem && emblemArea > 110.f) {
+      static const int8_t brandLogo[5] = {LOGO_LIMINAR, -1, LOGO_MALTAPLEX, LOGO_DESERET, LOGO_FREEHOLD};
+      int lg = st.uses < 5 ? brandLogo[st.uses] : -1;
+      if (lg >= 0) drawDecal(lg, st.o.u);
+      else drawEmblem((int)emblemX, (int)emblemY, meshEmblem, emblemArea > 700.f ? 2 : 1, bl.light);
+    }
+    meshAccent = 0; meshAmbient = 0.16f; meshDetail = 0; meshEmblem = 0; meshWindow = 0;
+  }
+  float sx, sy, z;
+  if (!project(st.p, sx, sy, z)) return;
+  float R = st.radius * FOCAL / z;
+  bool blink = ((int)(tNow * 2.f) & 1) != 0;
+  // the dock: a lit slot, collar, or the ring's own heart
+  if (style == SS_HEXCORE || style == SS_CORIOLIS) {
+    float fx, fy, fz;
+    if (project(st.p + st.o.f * st.radius * (style == SS_HEXCORE ? 0.87f : 0.98f), fx, fy, fz) && dot(st.o.f, shipPos - st.p) > 0) {
+      int w = (int)clampf(st.radius * 0.5f * FOCAL / fz, 2, 80), h = w / 3 + 1;
+      cv.fillRect((int)fx - w / 2, (int)fy - h / 2, w, h, rgb(4, 6, 10));
+      cv.drawRect((int)fx - w / 2, (int)fy - h / 2, w, h, blink ? bl.light : shade(bl.light, 0.45f));
+    }
+  } else if (style == SS_SPINDLE) {
+    float fx, fy, fz;
+    if (project(st.p + st.o.f * st.radius * 0.8f, fx, fy, fz)) cv.drawCircle((int)fx, (int)fy, (int)clampf(st.radius * 0.22f * FOCAL / fz, 2, 40), blink ? bl.light : shade(bl.light, 0.5f));
+  } else if (style == SS_OUTPOST) {
+    float fx, fy, fz;
+    if (project(st.p + st.o.f * st.radius * 0.45f, fx, fy, fz)) cv.fillCircle((int)fx, (int)fy, blink ? 2 : 1, bl.light);
+  }
+  // running lights at the extremities
+  if (R > 6) {
+    for (int i = 0; i < 4; i++) {
+      float a = i * 1.5707963f + (style == SS_RING ? 0.f : 0.785f);
+      float rr = style == SS_RING ? 1.12f : (style == SS_OUTPOST ? 1.6f : 1.05f);
+      float lx, ly, lz;
+      if (project(st.p + (st.o.r * cosf(a) + st.o.u * sinf(a)) * (st.radius * rr), lx, ly, lz) && ((i + (int)(tNow * 3.f)) & 1))
+        cv.drawPixel((int)lx, (int)ly, i < 2 ? rgb(255, 60, 50) : rgb(80, 255, 120));
+    }
+  }
+  // the maker's mark
+  if (R > 14 && R < 400) {
+    cv.setTextColor(bl.accent == rgb(46, 74, 132) ? rgb(150, 180, 230) : bl.light);
+    int tw = (int)strlen(bl.name) * 6;
+    cv.setCursor((int)sx - tw / 2, (int)clampf(sy + R * 1.15f + 4, 0, 200)); cv.print(bl.name);
+  }
+}
+
+// ============================================================
+//  decals: a logo baked onto a face in perspective. Each texel is placed on the
+//  face's own plane, oriented to the station's up, and lit with the face.
+// ============================================================
+// a logo straight onto the screen (board headers)
+static void drawLogoFlat(int x, int y, int logo) {
+  if (logo < 0 || logo >= LOGO_COUNT) return;
+  for (int j = 0; j < LOGO_SIZE; j++) for (int i = 0; i < LOGO_SIZE; i++) { uint16_t c = LOGOS[logo][j * LOGO_SIZE + i]; if (c) cv.drawPixel(x + i, y + j, c); }
+}
+
+static void drawDecal(int logo, V3 up) {
+  if (logo < 0 || logo >= LOGO_COUNT) return;
+  V3 n = norm(decalN);
+  V3 c = decalCenter;
+  float size = decalSize;
+  if (size <= 0.f) {   // fallback: the triangle alone
+    c = (decalA + decalB + decalC) * (1.f / 3.f);
+    float la = len(decalB - decalC), lb = len(decalC - decalA), lc = len(decalA - decalB);
+    float area3 = len(cross(decalB - decalA, decalC - decalA)) * 0.5f;
+    size = 2.f * area3 / (la + lb + lc + 1e-4f) * 1.35f;
+  }
+  V3 e2 = up - n * dot(up, n);
+  if (len(e2) < 1e-3f) e2 = decalB - decalA - n * dot(decalB - decalA, n);
+  e2 = norm(e2);
+  V3 e1 = cross(n, e2);
+  float cx, cy, cz;
+  if (!project(c, cx, cy, cz)) return;
+  float px = size * FOCAL / cz / LOGO_SIZE;   // screen size of one texel
+  int ts = (int)ceilf(px);
+  if (px < 0.45f) return;                       // too far: nothing would read
+  if (ts < 1) ts = 1;
+  float k = clampf(0.55f + 0.5f * decalK, 0.55f, 1.05f);
+  const uint16_t *img = LOGOS[logo];
+  for (int y = 0; y < LOGO_SIZE; y++) {
+    float v = 0.5f - (y + 0.5f) / LOGO_SIZE;
+    for (int x = 0; x < LOGO_SIZE; x++) {
+      uint16_t col = img[y * LOGO_SIZE + x];
+      if (!col) continue;
+      float u = (x + 0.5f) / LOGO_SIZE - 0.5f;
+      float sx, sy, sz;
+      if (!project(c + e1 * (u * size) + e2 * (v * size) + n * 0.05f, sx, sy, sz)) continue;
+      cv.fillRect((int)(sx - px * 0.5f), (int)(sy - px * 0.5f), ts, ts, k < 0.99f ? shade(col, k) : col);
+    }
+  }
 }
 
 // A ring in 3D: gates and portals are real hoops, seen at an angle.
@@ -760,7 +1185,7 @@ static int chartValue(uint8_t band) { return 70 * band * band; }
 static bool endingOpen = false;
 static bool lostOpen = false;
 static bool bootOpen = true;  // title card until first tap
-static bool statusOpen = false;  // long-press B: pilot license + ship diagnostic (visual reference only)
+static bool statusOpen = false;  // long-press C: pilot license + ship diagnostic (visual reference only)
 static uint8_t statusPage = 0;   // 0 license + diagnostic, 1 journal + active lead (hold C)
 static float newGameHold = 0, newGameDone = 0;   // splash: hold A + C
 // Something in the deep, below the roads. Rare; no damage; you never see it clearly.
@@ -789,8 +1214,10 @@ static void showRecognition(const sm::Landmark *lm) {
 // ============================================================
 //  gates, portals, trips
 // ============================================================
+static bool dueHereNow() { return layer == 0 && sm::contractDueHere(hereName); }   // deliveries are paid at surface docks
+
 static uint16_t gateColor(const Obj &g) {
-  if (g.kind == K_DOCKGATE) return rgb(70, 150, 255);
+  if (g.kind == K_DOCKGATE) return dueHereNow() ? rgb(240, 200, 90) : rgb(70, 150, 255);
   if (g.gflags & GF_JOB) return rgb(240, 200, 90);
   if (g.gflags & GF_FIXED) return rgb(185, 160, 255);        // charted deep landmark: lilac, never job-gold
   if (g.gflags & GF_LOCALNAME) return rgb(230, 175, 80);
@@ -889,15 +1316,49 @@ static void spawnNextOnPath() {
 }
 
 // ---- scenes ----
-static void placeStation(V3 p, V3 facing) {
+// A stable number for a place name in this universe: its sky, its star, its dock.
+static uint32_t placeHash(const char *name) {
+  // sheet().universeSeed is fixed for a universe (universeSeed() is the running RNG state)
+  uint32_t h = 2166136261u ^ sm::sheet().universeSeed;
+  for (const char *c = name; c && *c; c++) { h ^= (uint8_t)(*c >= 'a' && *c <= 'z' ? *c - 32 : *c); h *= 16777619u; }
+  h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12;
+  return h;
+}
+
+static uint8_t makeLook(uint8_t style, uint8_t brand) { return (uint8_t)(0x80 | (style & 7) | ((brand & 7) << 3)); }
+
+// Who built the dock here: decided once per place and remembered until the wipe.
+// Far places (deep-rated) are more often Freehold outposts.
+static uint8_t stationLookFor(const char *place) {
+  int ai = sm::atlasFind(place);
+  if (ai >= 0 && sm::atlas().place[ai].look) return sm::atlas().place[ai].look;
+  bool far = ai >= 0 && sm::atlas().place[ai].depth >= 2;
+  uint32_t r = placeHash(place) % 100;
+  uint8_t look;
+  if (r < (uint32_t)(far ? 38 : 10)) look = makeLook(SS_OUTPOST, BR_FREEHOLD);
+  else {
+    uint32_t q = (r * 7u) % 100;
+    look = q < 36 ? makeLook(SS_HEXCORE, BR_LIMINAR) : q < 70 ? makeLook(SS_RING, BR_MALTAPLEX) : makeLook(SS_SPINDLE, BR_PORTEX);
+  }
+  if (ai >= 0) sm::atlas().place[ai].look = look;
+  return look;
+}
+
+static void placeStation(V3 p, V3 facing, uint8_t look = 0) {
   Obj *st = newObj(K_STATION);
   if (!st) return;
-  st->p = p; st->o = Basis::facing(facing, V3{0, 1, 0}); st->radius = 22.f; st->mesh = M_STATION;
-  st->spin = 0.25f; st->col = rgb(150, 160, 175); st->enc = sm::ENC_STATION;
-  asciiCopy(st->name, sizeof(st->name), sm::encounterFlavor(sm::ENC_STATION, (uint8_t)layer).name);
+  if (!look) look = stationLookFor(hereName);
+  uint8_t style = look & 7, brand = (look >> 3) & 7;
+  static const float radius[] = {24.f, 32.f, 26.f, 11.f, 22.f};
+  st->p = p; st->o = Basis::facing(facing, V3{0, 1, 0}); st->radius = radius[style < 5 ? style : 0]; st->mesh = M_STATION;
+  st->spin = style == SS_OUTPOST ? 0.1f : 0.22f; st->col = rgb(150, 160, 175); st->enc = sm::ENC_STATION;
+  st->bodyType = style; st->uses = brand;
+  static const char *kindName[] = {"HEXCORE", "RING", "SPINDLE", "OUTPOST", "STATION"};
+  snprintf(st->name, sizeof(st->name), "%s %s", brandLook(brand).name, kindName[style < 5 ? style : 4]);
   Obj *dg = newObj(K_DOCKGATE);
   if (!dg) { st->kind = K_NONE; return; }
-  dg->p = p + st->o.f * 38.f; dg->o = st->o; dg->radius = 7.f;
+  dg->p = p + st->o.f * (stationDockFront(style) * st->radius); dg->o = st->o;
+  dg->radius = style == SS_RING ? st->radius * 0.55f : (style == SS_OUTPOST ? 5.5f : 7.f);
   snprintf(dg->name, sizeof(dg->name), "DOCK");
   dg->prevSide = dot(shipPos - dg->p, dg->o.f);
   st->link = idxOf(dg); dg->link = idxOf(st);
@@ -923,12 +1384,11 @@ static void placeDestGates(int want, V3 avoidDir = V3{0, 0, 0}) {
   int n = sm::atlasLanesHere(lanes, 8);
   sm::Contract &c = sm::contract();
   const char *names[8]; const char *vias[8] = {nullptr}; uint8_t depths[8], flags[8]; int m = 0;
-  if (c.live && c.dest[0]) { names[m] = c.dest; depths[m] = c.destDepth; flags[m] = GF_DEST | GF_JOB | GF_KNOWN; m++; }
   for (int i = 0; i < n && m < 6; i++) {
-    if (c.live && sm::sameName(lanes[i].name, c.dest)) continue;
     names[m] = lanes[i].name; depths[m] = lanes[i].depth; vias[m] = lanes[i].via[0] ? lanes[i].via : nullptr;
     flags[m] = GF_DEST | (lanes[i].fixed ? GF_FIXED : 0) |
                (lanes[i].visited ? GF_KNOWN : (lanes[i].rumor ? GF_RUMOR : GF_UNKNOWN));
+    if (c.live && c.dest[0] && sm::sameName(lanes[i].name, c.dest)) flags[m] |= GF_JOB;   // the lane your job runs down
     m++;
   }
   float span = 2.3f;                       // about 130 degrees of sky
@@ -983,10 +1443,11 @@ static void spawnRock(V3 p, float r) {
 static void makeRealScene(const char *place, bool station) {
   clearWorld();
   target = -1; navObj = -1; dockTarget = -1;
-  buildSky(sm::universeSeed() ^ rnd());
   asciiCopy(hereName, sizeof(hereName), place && place[0] ? place : sm::placeName(sm::urand(), 0, false));
   upcase(hereName);
+  buildSky(placeHash(hereName));   // a place keeps its sky (and its star) until the wipe
   sm::contractSetHere(hereName);
+  sm::contractSetBand(0);
   { sm::Atlas &at = sm::atlas();
     if (at.here == 255 || !sm::sameName(at.place[at.here].name, hereName)) sm::atlasVisit(hereName, nullptr, 1, false);
     if (at.here != 255) {
@@ -998,6 +1459,22 @@ static void makeRealScene(const char *place, bool station) {
   shipB = Basis::facing(V3{0, 0, 1}, V3{0, 1, 0});
   layer = 0;
   resetDust();
+  // sometimes the star is near enough to fly to; a rare cool one can even be scooped (it burns)
+  {
+    uint32_t h = placeHash(hereName) >> 7;
+    nearStar = (h % 100) < 38;
+    if (nearStar) {
+      static const float rad[7] = {90.f, 120.f, 150.f, 170.f, 230.f, 520.f, 14.f};
+      uint8_t bt = sunType == 5 ? BT_REDGIANT : (sunType == 6 ? BT_WHITEDWARF : BT_STAR);
+      spawnBody(bt, rad[sunType] * 9.f + 900.f, rad[sunType], sunDir);
+      for (auto &o : objs) if (o.kind == K_BODY && isStarBody(o.bodyType)) {
+        o.col = sunCol;
+        o.uses = (sunType <= 1 && ((h >> 9) % 100) < 40) ? 1 : 0;   // scoopable: cool and rare
+        static const char *sn[7] = {"RED DWARF", "ORANGE STAR", "YELLOW STAR", "WHITE STAR", "BLUE GIANT", "RED GIANT", "WHITE DWARF"};
+        snprintf(o.name, sizeof(o.name), "%s", sn[sunType]);
+      }
+    }
+  }
   // a giant to scoop, or a world; with no dock there is always a giant
   bool giant = !station || rf(0, 1) < 0.6f;
   V3 side = norm(shipB.f * rf(0.3f, 0.8f) + shipB.r * (rf(0, 1) < 0.5f ? -1.f : 1.f) + shipB.u * rf(-0.4f, 0.4f));
@@ -1047,6 +1524,7 @@ static const sm::Landmark *pickLandmark(int band, bool preferUncharted) {
 
 static void makeLayerScene() {
   clearWorld();
+  sm::contractSetBand((uint8_t)layer);
   target = -1; navObj = -1; dockTarget = -1;
   sm::Trip &tr = sm::trip();
   // The deep cove is persistent: same light, same bodies, same places, every life.
@@ -1067,6 +1545,11 @@ static void makeLayerScene() {
         if (tp.active && !tp.fixedPoint && !tp.via[0]) asciiCopy(tp.via, sizeof(tp.via), lm->name);   // you passed it
       }
   if (layer == 4) rngState = keep ^ rnd();
+  if (layer == 1 && rf(0, 1) < 0.12f) {   // a Freehold outpost, clinging to the shallows
+    V3 op = aheadPoint(rf(170, 230), (rf(0, 1) < 0.5f ? 1.f : -1.f) * rf(60, 110), rf(-30, 30));
+    placeStation(op, norm(shipPos - op), makeLook(SS_OUTPOST, BR_FREEHOLD));
+    for (auto &o : objs) if (o.kind == K_STATION) snprintf(o.name, sizeof(o.name), "DEEP OUTPOST");
+  }
   spawnTimer = rf(3, 6);
   if (layer >= 3 && countKind(K_LANDMARK) == 0 && alienCooldown <= 0.f && !alien.active && rf(0, 1) < 0.07f)
     alienPending = rf(6.f, 14.f);
@@ -1164,6 +1647,11 @@ static int verbsFor(const Obj &o, Chip *out) {
     case K_STATION: add(VB_DOCK, "DOCK", B, 0, nullptr); break;
     case K_ROCK: add(VB_MINE, "MINE", A, 40, o.uses == 0 ? "SPENT" : (holdFull ? "HOLD FULL" : nullptr)); break;
     case K_BODY:
+      if (isStarBody(o.bodyType)) {
+        if (o.uses == 1) add(VB_SCOOP, "SCOOP", C, o.radius * 0.5f, p.fuel >= p.fuelCap ? "TANK FULL" : (o.timer > 0 ? "SETTLING" : nullptr));
+        else add(VB_SCOOP, "SCOOP", C, 0, "TOO HOT");
+        break;
+      }
       if (o.bodyType == BT_GIANT)
         add(VB_SCOOP, "SCOOP", C, o.radius * 0.45f, p.fuel >= p.fuelCap ? "TANK FULL" : (o.timer > 0 ? "SETTLING" : nullptr));
       break;
@@ -1245,6 +1733,16 @@ static void finishTheater() {
     saveAll();
     return;
   }
+  if (verb == VB_SCOOP && isStarBody(o.bodyType)) {
+    uint16_t before = sm::sheet().fuel;
+    sm::setFuel((uint16_t)(before + 22 + sm::capTier(sm::CAP_FUELSYS) * 6));
+    sm::grantXp(sm::CR_PROSPECTOR, 6);
+    char b[112]; snprintf(b, sizeof(b), "SKIMMED THE CORONA | +%dfuel", (int)sm::sheet().fuel - (int)before);
+    setBanner(b, 2200);
+    o.timer = 6.f;
+    hx::swell(0.6f, 0.1f, 0.4f);
+    return;
+  }
   if (verb == VB_SCOOP) {
     uint16_t before = sm::sheet().fuel;
     sm::ResolveIn in{sm::VERB_HAIL, sm::ENC_LANDMARK_GIANT, (uint8_t)layer, 1};
@@ -1282,6 +1780,8 @@ static void finishTheater() {
   if (dc) k += snprintf(tail + k, sizeof(tail) - k, " %+dcr", dc);
   if (dh && k < sizeof(tail)) k += snprintf(tail + k, sizeof(tail) - k, " %+dhull", dh);
   if (df && k < sizeof(tail)) k += snprintf(tail + k, sizeof(tail) - k, " %+dfuel", df);
+  if (who == sm::ENC_ANOMALY && !attack && layer > 0 && sm::haulAdd("anomaly scan", 1, true) && k < sizeof(tail))
+    k += snprintf(tail + k, sizeof(tail) - k, " +1 scan");   // deep outposts pay for these
   if (dhold > 0 && k < sizeof(tail)) snprintf(tail + k, sizeof(tail) - k, " +%dhold", dhold);
   char b[112]; snprintf(b, sizeof(b), "%s%s%s", out.blurb ? out.blurb : "...", tail[0] ? " |" : "", tail);
   setBanner(b, 3000);
@@ -1314,7 +1814,8 @@ static void beginTheater(int oi, uint8_t verb) {
     theater = TH_COMM; maxVolleys = 0;
   } else {
     theater = TH_BEAM;
-    maxVolleys = (uint8_t)(verb == VB_MINE ? 4 + sm::capTier(sm::CAP_MINING) : 5);
+    maxVolleys = (uint8_t)(verb == VB_MINE ? 4 + sm::capTier(sm::CAP_MINING)
+                         : verb == VB_SCOOP ? (5 - sm::capTier(sm::CAP_FUELSYS) / 2 < 2 ? 2 : 5 - sm::capTier(sm::CAP_FUELSYS) / 2) : 5);
     if (maxVolleys > 9) maxVolleys = 9;
   }
 }
@@ -1387,7 +1888,8 @@ static uint8_t courseDepth = 0, courseFlags = 0;
 
 static int refuelCost() {
   const sm::Pilot &p = sm::sheet();
-  return (p.fuelCap - p.fuel) * sm::fuelPrice() + (p.hullMax - p.hull) * sm::repairPrice();
+  int fp = sm::fuelPrice() * (layer > 0 ? 3 : 2) / 2;   // fuel hauled down to an outpost costs more
+  return (p.fuelCap - p.fuel) * fp + (p.hullMax - p.hull) * sm::repairPrice();
 }
 static int rumorPrice() { return 12; }
 static int gearPrice() { return 80 + sm::capTier((sm::CapId)gearCap) * 55; }
@@ -1397,17 +1899,38 @@ static int sellableValue(bool doSell) {
   int pay = 0; char names[sm::MAX_HAUL_LINES][sm::NAME_LEN]; int nn = 0;
   for (uint8_t i = 0; i < p.haulN; ++i) {
     if (owned && strncmp(p.haul[i].what, owned, sm::NAME_LEN) == 0) continue;
-    pay += p.haul[i].amount * sm::marketPrice(p.haul[i].what, p.haul[i].legal != 0);
+    bool scan = strcmp(p.haul[i].what, "anomaly scan") == 0;
+    if (scan && layer == 0) continue;   // nobody up here believes in them, let alone buys them
+    int each = scan ? 60 + 40 * layer : sm::marketPrice(p.haul[i].what, p.haul[i].legal != 0);
+    if (layer > 0 && (strcmp(p.haul[i].what, "rock") == 0 || strcmp(p.haul[i].what, "ore") == 0)) each *= 2;
+    pay += p.haul[i].amount * each;
     strncpy(names[nn], p.haul[i].what, sm::NAME_LEN); nn++;
   }
   if (doSell) for (int i = 0; i < nn; i++) sm::haulRemove(names[i]);
   return pay;
 }
 
+static void boardLanes() {
+  sm::AtlasLane lanes[8];
+  int n = sm::atlasLanesHere(lanes, 8), m = 0;
+  const char *names[8]; uint8_t depths[8], visited[8];
+  for (int i = 0; i < n; i++) {
+    if (lanes[i].fixed) continue;                       // a landmark is not a delivery address
+    int ai = sm::atlasFind(lanes[i].name);
+    if (ai >= 0) {
+      const sm::AtlasPlace &ap = sm::atlas().place[ai];
+      if ((ap.flags & sm::AP_STATION_SET) && !(ap.flags & sm::AP_HAS_STATION)) continue;   // no dock to deliver to
+    }
+    names[m] = lanes[i].name; depths[m] = lanes[i].depth; visited[m] = lanes[i].visited ? 1 : 0; m++;
+  }
+  sm::contractSetLanes(names, depths, visited, m);
+}
+
 static void openBoard() {
   stationOpen = true; stationChoice = 0;
-  sm::contractOffer();
-  opportunityTaken = !sm::makeOpportunity(stationOpportunity, 0);
+  if (layer > 0) sm::contractOfferDeep();   // deep outposts post deep work
+  else { boardLanes(); sm::contractOffer(); }
+  opportunityTaken = layer > 0 || !sm::makeOpportunity(stationOpportunity, 0);
   gearCap = (int)(sm::urand() % sm::CAP_COUNT);
   if (sm::sheet().rank[sm::CR_DEPTHRUNNER] >= 4 && (sm::urand() % 100) < 35) gearCap = sm::CAP_STABILIZER;
   asciiCopy(stationMoodText, sizeof(stationMoodText), sm::stationMood((uint8_t)(sm::urand() % 5), sm::worldPressure(), sm::urand()));
@@ -1427,7 +1950,8 @@ static void launch() {
   launchAnim = 0.9f;
   Obj *st = (stationIdx >= 0 && objs[stationIdx].kind == K_STATION) ? &objs[stationIdx] : nullptr;
   if (st) {
-    shipPos = st->p + st->o.f * 52.f; prevShipPos = shipPos;
+    V3 gp = (st->link >= 0 && objs[st->link].kind == K_DOCKGATE) ? objs[st->link].p : st->p + st->o.f * 40.f;
+    shipPos = gp + st->o.f * 14.f; prevShipPos = shipPos;
     shipB = Basis::facing(st->o.f, st->o.u);
     for (auto &o : objs) if (o.kind == K_GATE || o.kind == K_DOCKGATE || o.kind == K_PORTAL) o.prevSide = dot(shipPos - o.p, o.o.f);
   }
@@ -1444,6 +1968,14 @@ static void launch() {
   throttleT = 0.5f;
   shipSpeed = 12.f;
   saveAll();
+}
+
+// After taking a job: its lane in this system turns gold and is targeted. No new gate.
+static void lightJobLane() {
+  const sm::Contract &c = sm::contract();
+  if (!c.live || !c.dest[0]) return;
+  for (int i = 0; i < MAX_OBJ; i++)
+    if (objs[i].kind == K_GATE && (objs[i].gflags & GF_DEST) && sm::sameName(objs[i].name, c.dest)) { objs[i].gflags |= GF_JOB; target = i; }
 }
 
 static void setCourse(const char *name, uint8_t depth, uint8_t flags) {
@@ -1471,14 +2003,16 @@ static void stationCommit() {
       }
       break;
     }
-    case 1:   // work: accepting sets the course
+    case 1:   // work: deliver here, drop the lead, or take the board's job
+      if (dueHereNow()) { sm::contractDeliverHere(hereName); hx::swell(0.5f, 0.1f, 0.3f); break; }
       if (sm::contract().live) { sm::contractAbandon(); setBanner("LEAD DROPPED", 1400); break; }
       if (sm::contractAccept(off)) {
         snprintf(buf, sizeof(buf), "ACCEPTED: %s", off.title); setBanner(buf, 2000);
-        if (off.dest[0]) { setCourse(off.dest, off.destDepth, GF_DEST | GF_JOB | GF_KNOWN); launch(); return; }
+        if (off.dest[0]) { launch(); lightJobLane(); return; }
       } else setBanner(off.kind == sm::CK_MARKET ? "CANNOT COVER THE CARGO" : "NO ROOM IN THE HOLD", 1800);
       break;
     case 2: {   // a rumor is a place you can now fly to: buying it sets the course
+      if (layer > 0) { setBanner("NOBODY SELLS NAMES DOWN HERE", 1400); break; }
       if (!sm::spendCredits(rumorPrice())) { setBanner("THE RUMOR SELLER WANTS MONEY", 1500); break; }
       char name[24]; asciiCopy(name, sizeof(name), sm::placeName(sm::urand(), 0, false));
       uint8_t d = sm::placeDepth(name);
@@ -1515,7 +2049,7 @@ static void stationCommit() {
         opportunityTaken = true;
         snprintf(buf, sizeof(buf), "LEAD: %s", stationOpportunity.title); setBanner(buf, 2000);
         const sm::Contract &c = sm::contract();
-        if (c.dest[0]) { setCourse(c.dest, c.destDepth, GF_DEST | GF_JOB | GF_KNOWN); launch(); return; }
+        if (c.dest[0]) { launch(); lightJobLane(); return; }
       } else setBanner("NO ROOM FOR THAT WORK", 1500);
       break;
     case 5: launch(); return;
@@ -1531,14 +2065,15 @@ static void arriveReal(bool turnedBack) {
   sm::tripEnd();
   char place[24];
   bool station;
-  if (turnedBack) { asciiCopy(place, sizeof(place), sm::placeName(sm::urand(), 0, false)); station = rf(0, 1) < 0.35f; }
+  if (turnedBack) { asciiCopy(place, sizeof(place), sm::placeName(sm::urand(), 0, false)); station = rf(0, 1) < 0.6f; }
   else if (tr.fixedPoint) {
     // a fixed point is in the deep; the climb out surfaces somewhere new, in any sky
-    asciiCopy(place, sizeof(place), sm::placeName(sm::urand(), 0, false)); station = rf(0, 1) < 0.5f;
+    asciiCopy(place, sizeof(place), sm::placeName(sm::urand(), 0, false)); station = rf(0, 1) < 0.65f;
   }
-  else { asciiCopy(place, sizeof(place), tr.dest); station = tr.unknown ? rf(0, 1) < 0.45f : rf(0, 1) < 0.85f; }
+  else { asciiCopy(place, sizeof(place), tr.dest); station = tr.unknown ? rf(0, 1) < 0.7f : rf(0, 1) < 0.85f; }
   upcase(place);
   sm::atlasVisit(place, tripOrigin, tr.destDepth, true, tr.fixedPoint ? tr.dest : (tr.via[0] ? tr.via : nullptr));
+  if (!turnedBack && sm::contract().live && sm::sameName(place, sm::contract().dest)) station = true;
   { // a place you have been keeps its dock, or its lack of one
     int ai = sm::atlasFind(place);
     if (ai >= 0) {
@@ -1688,7 +2223,7 @@ static void onDestroyedFlow() {
   queuedN = 0;
   hx::boom(1.f);
   crossFlash = 1.f;
-  makeRealScene(nullptr, rf(0, 1) < 0.5f);
+  makeRealScene(nullptr, rf(0, 1) < 0.65f);
   // Beat between skies: pod recovered, still lost — no meta about reseeding.
   lostOpen = true;
   saveAll();
@@ -1849,9 +2384,9 @@ static void updateInput() {
   }
   if (M5.BtnA.wasHold()) { mapOpen = true; mapPage = 0; mapTrace = -1; hx::pop(0.25f, 0.02f); return; }
   if (M5.BtnA.wasClicked()) cycleTarget();   // release edge: a hold never cycles
-  if (M5.BtnB.wasHold()) { statusOpen = true; statusPage = 0; hx::pop(0.25f, 0.02f); return; }
+  if (M5.BtnC.wasHold()) { statusOpen = true; statusPage = 0; hx::pop(0.25f, 0.02f); return; }
   if (M5.BtnB.wasClicked()) { captureNeutral(); tiltX = tiltY = tiltRoll = 0; rateYaw = ratePitch = rateRoll = 0; setBanner("ATTITUDE CENTERED", 900); hx::pop(0.2f, 0.02f); }
-  if (M5.BtnC.wasPressed()) { throttleT = 0.5f; setBanner("CRUISE", 700); hx::pop(0.2f, 0.02f); }
+  if (M5.BtnC.wasClicked()) { throttleT = 0.5f; setBanner("CRUISE", 700); hx::pop(0.2f, 0.02f); }   // release edge: a hold opens status
 
   if (!neutralValid) captureNeutral();
   if (M5.Imu.update()) {
@@ -1904,11 +2439,24 @@ static void autopilot() {
   float latd = len(latv);
   V3 out = latd > 1.f ? latv * (1.f / latd) : st.o.r;
   V3 aim;
-  float side = ax - 38.f;                      // distance in front of the dock gate
-  if (ax < 32.f && latd < 60.f) aim = st.p + out * 85.f + f * clampf(ax, -40.f, 60.f);    // clear the hull
-  else if (ax < 32.f) aim = st.p + f * 95.f + out * 25.f;                                    // round to the front
-  else if (latd > side * 0.3f + 2.f) aim = st.p + f * (38.f + clampf(side * 0.5f, 12.f, 80.f)); // onto the axis
-  else aim = g.p - f * 6.f;                                                                   // through the slot
+  float front = stationDockFront(st.bodyType) * st.radius;   // the gate, along the station's axis
+  float side;
+  if (st.bodyType == SS_RING) {
+    // the ring is open both ways: come in along the axis from whichever side you are on
+    float sg = ax >= 0.f ? 1.f : -1.f, d = fabsf(ax);
+    side = d;
+    if (d < 30.f && latd > st.radius * 0.45f) aim = st.p + f * (sg * 70.f) + out * (latd * 0.5f);     // stand off the plane
+    else if (latd > d * 0.3f + 2.f) aim = st.p + f * (sg * clampf(d * 0.5f, 12.f, 80.f));             // onto the axis
+    else aim = st.p - f * (sg * 6.f);                                                                   // through the middle
+  } else {
+    float clear = st.radius * (st.bodyType == SS_OUTPOST ? 4.f : 3.4f);
+    float hullFront = front - 6.f;
+    side = ax - front;                         // distance in front of the dock gate
+    if (ax < hullFront && latd < clear * 0.72f) aim = st.p + out * clear + f * clampf(ax, -2.f * st.radius, 60.f);   // clear the hull
+    else if (ax < hullFront) aim = st.p + f * (front + 57.f) + out * 25.f;                                          // round to the front
+    else if (latd > side * 0.3f + 2.f) aim = st.p + f * (front + clampf(side * 0.5f, 12.f, 80.f));                 // onto the axis
+    else aim = g.p - f * 6.f;                                                                                       // through the slot
+  }
   V3 loc = shipB.toLocal(norm(aim - shipPos));
   shipB.yaw(clampf(atan2f(loc.x, loc.z), -1.2f * dt, 1.2f * dt));
   shipB.pitch(clampf(-atan2f(loc.y, loc.z), -1.2f * dt, 1.2f * dt));
@@ -1959,16 +2507,40 @@ static void updateContacts() {
   }
 }
 
+// The nearest point of a station's hull to p, and how thick the hull is there.
+static void stationHull(const Obj &st, V3 p, V3 &c, float &cr) {
+  V3 rel = p - st.p, f = st.o.f;
+  float ax = dot(rel, f);
+  switch (st.bodyType) {
+    case SS_RING: {   // a torus: the middle is open (that is the dock)
+      V3 radial = rel - f * ax;
+      float rl = len(radial);
+      c = st.p + (rl > 1e-3f ? radial * (1.f / rl) : st.o.r) * st.radius;
+      cr = st.radius * 0.3f;
+      return;
+    }
+    case SS_SPINDLE: {   // a capsule along its axis
+      float t = clampf(ax, -1.75f * st.radius, 0.45f * st.radius);   // stops short of the dock gate at the tip
+      c = st.p + f * t; cr = st.radius * 0.58f;
+      return;
+    }
+    case SS_OUTPOST: c = st.p; cr = st.radius * 1.35f; return;
+    default: c = st.p; cr = st.radius * 1.15f; return;
+  }
+}
+
 static void collide() {
   for (int i = 0; i < MAX_OBJ; i++) {
     Obj &o = objs[i];
     if (!(o.kind == K_STATION || o.kind == K_ROCK || o.kind == K_BODY || o.kind == K_LANDMARK || o.kind == K_SHIP)) continue;
-    float r = o.kind == K_STATION ? o.radius * 1.3f : o.radius * 1.05f;
-    V3 d = shipPos - o.p;
+    float r = o.radius * 1.05f;
+    V3 centre = o.p;
+    if (o.kind == K_STATION) stationHull(o, shipPos, centre, r);
+    V3 d = shipPos - centre;
     float l = len(d);
     if (l >= r || l < 1e-3f) continue;
     V3 nrm = d * (1.f / l);
-    shipPos = o.p + nrm * (r + 0.2f);
+    shipPos = centre + nrm * (r + 0.2f);
     // glance off: turn the nose along the surface and lose speed
     float into = -dot(shipB.f, nrm);
     if (into > 0.f) { shipB.f = norm(shipB.f + nrm * (into * 1.3f)); shipB.fix(); }
@@ -1980,7 +2552,7 @@ static void collide() {
     } else if (o.timer <= 0) {
       o.timer = 1.2f;
       int dmg = (int)clampf(impact * 0.35f, 1.f, o.kind == K_BODY ? 8.f : 6.f);
-      setBanner(o.kind == K_BODY ? "ATMOSPHERE SKIP - SHIELDS SCREAM" : "SCRAPED THE HULL", 1200);
+      setBanner(o.kind == K_BODY ? (isStarBody(o.bodyType) ? "CORONA BURN - PULL AWAY" : "ATMOSPHERE SKIP - SHIELDS SCREAM") : "SCRAPED THE HULL", 1200);
       if (damage(dmg)) return;
     }
   }
@@ -1995,11 +2567,30 @@ static void gateCrossings() {
     g.prevSide = side;
     bool crossed = (prev > 0 && side <= 0) || (prev < 0 && side >= 0);
     if (!crossed || fabsf(prev - side) < 1e-5f) continue;
+    if (dockTarget >= 0 && i != dockTarget) continue;   // the docking computer only threads the dock
     V3 x = lerp3(prevShipPos, shipPos, prev / (prev - side));
     if (len(x - g.p) < g.radius) { threadGate(g); return; }   // world may have changed
     if (g.kind == K_PORTAL && len(x - g.p) < g.radius * 2.2f) {
       setBanner("THE PORTAL REJECTS A CROOKED APPROACH - COME ROUND", 1800);
       hx::stutter(0.4f, 3, 0.08f);
+    }
+  }
+}
+
+static float starHeat = 0.f;
+static void heatWorld() {
+  for (auto &o : objs) {
+    if (o.kind != K_BODY || !isStarBody(o.bodyType)) continue;
+    float sd = surfaceDist(o), heatR = o.radius * 0.6f;
+    if (sd > heatR) continue;
+    float close = 1.f - clampf(sd / heatR, 0.f, 1.f);
+    hx::hum(hx::HUM_BODY, 0.3f + 0.5f * close, 9.f + 14.f * close, 0.7f);   // a rasping heat
+    starHeat += dt * (1.f + close * 2.5f);
+    if (starHeat >= 0.9f) {
+      starHeat = 0.f;
+      char b[48]; snprintf(b, sizeof(b), "HULL HEATING - %d%%", (int)(40 + close * 60));
+      setBanner(b, 900);
+      if (damage(1 + (int)(close * 3.f))) return;
     }
   }
 }
@@ -2106,6 +2697,7 @@ static void updateWorld() {
   collide();
   updateContacts();
   theaterTick();
+  heatWorld();
   hapticWorld();
 
   spawnTimer -= dt;
@@ -2188,7 +2780,8 @@ static void drawGateLike(Obj &o, float sx, float sy, float z) {
   }
   if (aligned) cv.drawCircle((int)sx, (int)sy, (int)(r * 1.25f) + 2, rgb(240, 240, 210));
   if (o.kind == K_DOCKGATE && r > 3) {
-    cv.setTextColor(col); cv.setCursor((int)sx - 12, (int)(sy - r - 11)); cv.print("DOCK");
+    bool due = dueHereNow();
+    cv.setTextColor(col); cv.setCursor((int)sx - (due ? 24 : 12), (int)(sy - r - 11)); cv.print(due ? "DOCK - JOB" : "DOCK");
   } else if (r > 2.5f && (o.gflags & GF_DEST) && z < 700) {
     cv.setTextColor(col);
     cv.setCursor((int)sx - (int)strlen(o.name) * 3, (int)(sy - r - 20)); cv.print(o.name);
@@ -2225,6 +2818,7 @@ static void drawObjects() {
     switch (o.kind) {
       case K_BODY: drawBody(o); break;
       case K_STATION:
+        if (o.bodyType != SS_CORIOLIS) { drawStationObj(o); break; }
         drawMesh(o, meshes[M_STATION], o.radius, o.col, rgb(200, 215, 230), true, outR);
         if (project(o.p + o.o.f * o.radius * 0.98f, sx, sy, z) && dot(o.o.f, shipPos - o.p) > 0) {
           int w = (int)clampf(o.radius * 0.55f * FOCAL / z, 2, 80), h = w / 3 + 1;
@@ -2247,7 +2841,13 @@ static void drawObjects() {
             Obj echo = o; echo.p = o.p - o.v * 0.25f;
             drawMesh(echo, meshes[o.mesh], o.radius, 0, hsv(layerHue(layer) + 180, 0.8f, 0.5f), false, outR);
           }
-          drawMesh(o, meshes[o.mesh], o.radius, o.col, o.ghost ? rgb(170, 190, 200) : shade(o.col, 1.5f), true, outR);
+          uint16_t hull = shipLivery(o);
+          if (!hull) hull = o.col;
+          meshAmbient = 0.3f; meshDetail = 1;
+          if (o.ghost) { meshEmblem = 1; emblemArea = 0.f; decalSize = 0.f; }
+          drawMesh(o, meshes[o.mesh], o.radius, hull, o.ghost ? rgb(170, 190, 200) : shade(hull, 1.3f), true, outR);
+          if (o.ghost && emblemArea > 90.f) drawDecal(LOGO_GHOSTFLEET, o.o.u);
+          meshAccent = meshCanopy = 0; meshAmbient = 0.16f; meshDetail = 0; meshEmblem = 0;
           if (outR > 2 && project(o.p - o.o.f * o.radius, sx, sy, z))   // engine glow
             cv.fillCircle((int)sx, (int)sy, (int)clampf(outR * 0.12f, 1, 4), o.ghost ? rgb(200, 255, 230) : o.hostile ? rgb(255, 120, 80) : rgb(140, 200, 255));
         }
@@ -2442,7 +3042,8 @@ static void drawHud() {
     cv.setTextColor(rgb(230, 200, 100)); cv.setCursor(4, 15);
     cv.printf("JOB %s %u/%u", c.title, c.progress, c.need);
     cv.setTextColor(rgb(150, 130, 80)); cv.setCursor(4, 25);
-    if (c.dest[0]) cv.printf("-> %s  depth %u", c.dest, c.destDepth); else cv.print(sm::contractHint(c));
+    if (dueHereNow()) cv.print("-> deliver at the dock here");
+    else if (c.dest[0]) cv.printf("-> %s  depth %u", c.dest, c.destDepth); else cv.print(sm::contractHint(c));
   }
 
   // depth ladder, left edge: where you are, and where the trip turns
@@ -2480,18 +3081,30 @@ static void drawStation() {
   sm::Pilot &p = sm::sheet();
   cv.fillRect(8, 4, 304, 206, rgb(5, 10, 16));
   cv.drawRoundRect(8, 4, 304, 206, 8, rgb(70, 150, 255));
-  const char *nm = stationIdx >= 0 && objs[stationIdx].kind == K_STATION ? objs[stationIdx].name : "STATION";
-  cv.setTextSize(2); cv.setTextColor(rgb(100, 180, 255)); cv.setCursor(18, 10); cv.print(nm); cv.setTextSize(1);
+  const Obj *stn = stationIdx >= 0 && objs[stationIdx].kind == K_STATION ? &objs[stationIdx] : nullptr;
+  uint8_t br = stn ? stn->uses : (uint8_t)BR_LIMINAR;
+  const BrandLook &bl = brandLook(br);
+  static const int8_t brandLogo[5] = {LOGO_LIMINAR, -1, LOGO_MALTAPLEX, LOGO_DESERET, LOGO_FREEHOLD};
+  int lg = br < 5 ? brandLogo[br] : -1;
+  int tx = 18;
+  if (lg >= 0) { drawLogoFlat(14, 7, lg); tx = 44; }
+  cv.setTextSize(2); cv.setTextColor(bl.light); cv.setCursor(tx, 8); cv.print(bl.name); cv.setTextSize(1);
+  const char *kind = stn ? strchr(stn->name, ' ') : nullptr;
+  cv.setTextColor(rgb(120, 134, 150)); cv.setCursor(tx, 25); cv.print(stn && strncmp(stn->name, "DEEP", 4) == 0 ? "DEEP OUTPOST" : (kind ? kind + 1 : "STATION"));
   cv.setTextColor(rgb(140, 150, 165)); cv.setCursor(176, 10); cv.printf("$%ld  H%d/%d", (long)p.credits, p.hull, p.hullMax);
   cv.setCursor(176, 20); cv.printf("F%d/%d  hold %u/%u", p.fuel, p.fuelCap, p.holdUsed, p.holdCap);
   char mood[48]; strncpy(mood, stationMoodText, 46); mood[46] = 0;
-  cv.setTextColor(rgb(110, 125, 140)); cv.setCursor(18, 32); cv.print(mood);
+  cv.setTextColor(rgb(110, 125, 140)); cv.setCursor(18, 35); cv.print(mood);
 
   char rows[STATION_ROWS][56];
   int rc = refuelCost();
   if (rc > 0) snprintf(rows[0], 56, "REFUEL / REPAIR   %dcr", rc); else snprintf(rows[0], 56, "REFUEL / REPAIR   topped up");
-  if (c.live) snprintf(rows[1], 56, "DROP LEAD: %s", c.title); else snprintf(rows[1], 56, "WORK: %s  +%dcr", off.title, off.pay);
-  snprintf(rows[2], 56, "BUY A RUMOR   %dcr", rumorPrice());
+  bool dueHere = dueHereNow();
+  if (dueHere) snprintf(rows[1], 56, "DELIVER: %s  +%dcr", c.title, c.pay);
+  else if (c.live) snprintf(rows[1], 56, "DROP LEAD: %s", c.title);
+  else snprintf(rows[1], 56, "WORK: %s  +%dcr", off.title, off.pay);
+  if (layer > 0) snprintf(rows[2], 56, "RUMORS: nobody sells names here");
+  else snprintf(rows[2], 56, "BUY A RUMOR   %dcr", rumorPrice());
   int sell = sellableValue(false);
   if (sell > 0) snprintf(rows[3], 56, "SELL HAUL   +%dcr", sell);
   else {
@@ -2503,20 +3116,22 @@ static void drawStation() {
   for (int i = 0; i < STATION_ROWS; ++i) {
     int y = ROW_Y0 + i * ROW_PITCH; bool sel = i == stationChoice;
     cv.fillRoundRect(18, y, 284, ROW_H, 4, sel ? rgb(25, 90, 90) : rgb(16, 24, 32));
-    cv.setTextColor(sel ? rgb(120, 255, 210) : rgb(180, 190, 200));
+    cv.setTextColor(i == 1 && dueHere ? rgb(255, 215, 110) : sel ? rgb(120, 255, 210) : rgb(180, 190, 200));
     cv.setCursor(28, y + 6); cv.print(rows[i]);
   }
   char dbuf[112] = "";
   switch (stationChoice) {
     case 0: snprintf(dbuf, sizeof(dbuf), "fuel %dcr/u  hull %dcr/u. you stay docked.", sm::fuelPrice(), sm::repairPrice()); break;
     case 1: {
+      if (dueHere) { snprintf(dbuf, sizeof(dbuf), "the cargo is expected here. hand it over and get paid."); break; }
       const sm::Contract &j = c.live ? c : off;
       if (j.dest[0]) snprintf(dbuf, sizeof(dbuf), "to %s, depth %u. taking it sets your course.", j.dest, j.destDepth);
       else snprintf(dbuf, sizeof(dbuf), "%s", sm::contractHint(j));
       break;
     }
     case 2: snprintf(dbuf, sizeof(dbuf), "a place you haven't heard of. buying it sets your course."); break;
-    case 3: snprintf(dbuf, sizeof(dbuf), "%s", sell > 0 ? "hold lines your lead doesn't own" : "earned capability is equipped at once"); break;
+    case 3: snprintf(dbuf, sizeof(dbuf), "%s", layer > 0 ? "rock and ore fetch double down here. they buy deep scans."
+                                                  : sell > 0 ? "hold lines your lead doesn't own" : "earned capability is equipped at once"); break;
     case 4: asciiCopy(dbuf, sizeof(dbuf), opportunityTaken ? "" : stationOpportunity.detail); break;
     case 5: snprintf(dbuf, sizeof(dbuf), "back out among the gates"); break;
   }
@@ -2715,16 +3330,16 @@ static void drawStatus() {
   cv.setTextColor(DIM); cv.setCursor(X, 174); cv.print("RATED");
   statusPips(X + 34, 175, safe, 4, LILAC);
   cv.setTextColor(LILAC); cv.setCursor(X + 56, 174); cv.print(layerName(safe));
-  static const char *capShort[] = {"WEAPONS", "SHIELDS", "MINING", "SCANNER", "TRAILER", "STABILZ", "BULKHD", "CLOAK"};
-  for (int i = 0; i < sm::CAP_COUNT && i < 8; i++) {
+  static const char *capShort[] = {"WEAPONS", "SHIELDS", "MINING", "SCANNER", "TRAILER", "STABILZ", "BULKHD", "CLOAK", "FUELSYS"};
+  for (int i = 0; i < sm::CAP_COUNT && i < 10; i++) {
     int v = p.cap[i];
-    int cx = X + (i % 2) * 70, cy = 188 + (i / 2) * 11;
+    int cx = X + (i % 2) * 70, cy = 186 + (i / 2) * 9;
     cv.setTextColor(v ? TXT : DIM); cv.setCursor(cx, cy); cv.print(capShort[i]);
     cv.setTextColor(v ? LIME : DIM); cv.setCursor(cx + 46, cy);
     if (v) cv.printf("MK%d", v); else cv.print("--");
   }
-  cv.setTextColor(rgb(70, 95, 105)); cv.setCursor(10, 226); cv.print("tap to close");
-  cv.setTextColor(rgb(110, 130, 140)); cv.setCursor(226, 226); cv.print("hold C: journal");
+  cv.setTextColor(rgb(70, 95, 105)); cv.setCursor(10, 226); cv.print("tap: close");
+  cv.setTextColor(rgb(110, 130, 140)); cv.setCursor(82, 226); cv.print("hold C: journal");
 }
 
 // ============================================================
@@ -3029,8 +3644,8 @@ static void drawSystemMap() {
   cv.print(title);
   int y = 18; char d[24], l[64];
   if (layer == 0) {
-    static const char *st[] = {"ORANGE STAR", "YELLOW-WHITE STAR", "BLUE-WHITE STAR"};
-    sysRow(y, sunCol, st[sunType], "the local sun", TXT);
+    static const char *st[] = {"RED DWARF", "ORANGE STAR", "YELLOW STAR", "WHITE STAR", "BLUE GIANT", "RED GIANT", "WHITE DWARF"};
+    if (!nearStar) sysRow(y, sunCol, st[sunType], "the local sun", TXT);
     for (auto &o : objs) if (o.kind == K_BODY) { distLabel(d, sizeof(d), surfaceDist(o)); sysRow(y, o.col, o.name, d, TXT); }
     for (auto &o : objs) if (o.kind == K_STATION) { distLabel(d, sizeof(d), distTo(o)); snprintf(l, sizeof(l), "%s - docking", o.name); sysRow(y, BLUE, l, d, rgb(120, 180, 255)); }
     int rocks = countKind(K_ROCK), ships = countKind(K_SHIP);
@@ -3403,9 +4018,9 @@ void setup() {
   initSin();
   initBlocks();
   hx::begin();
-  M5.BtnB.setHoldThresh(600);   // hold B for the status screen
+  M5.BtnB.setHoldThresh(600);
   M5.BtnA.setHoldThresh(600);   // hold A for the map
-  M5.BtnC.setHoldThresh(600);   // hold C on the status screen for the journal
+  M5.BtnC.setHoldThresh(600);   // hold C: status; hold C again: journal
 
   sm::sheetInit();
   sm::contractsInit();

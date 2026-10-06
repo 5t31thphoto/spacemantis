@@ -24,6 +24,7 @@ struct AtlasPlace {
   uint8_t depth;       // how deep a dive reaches it
   uint8_t flags;
   uint16_t lastSeen;   // visit clock, for forgetting
+  uint8_t look;        // a place's dock style + builder, fixed on first visit (0 = not yet)
 };
 struct AtlasLink { uint8_t a, b, depth, flags, via; };   // via: the landmark hub a lane passes (255 = none)
 
