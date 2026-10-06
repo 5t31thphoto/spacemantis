@@ -134,11 +134,11 @@ void grantXp(CareerId id, uint16_t amount) {
     s_p.rank[id]++;
     // Career ranks are the main long-term progression. They quietly alter the fit.
     uint8_t r = s_p.rank[id];
-    if (id == CR_HAULER && (r % 4) == 0) s_p.holdCap = (uint16_t)(s_p.holdCap + 3);
+    if (id == CR_HAULER && (r % 4) == 0) deriveFit();
     if (id == CR_GUNHAND && (r % 3) == 0) earnCap(CAP_WEAPONS, (uint8_t)(s_p.cap[CAP_WEAPONS] + 1));
     if (id == CR_PROSPECTOR && (r % 3) == 0) earnCap(CAP_MINING, (uint8_t)(s_p.cap[CAP_MINING] + 1));
     if (id == CR_RESCUER && (r % 4) == 0) earnCap(CAP_SHIELDS, (uint8_t)(s_p.cap[CAP_SHIELDS] + 1));
-    if (id == CR_TRADER && (r % 5) == 0) s_p.fuelCap = (uint16_t)(s_p.fuelCap + 8);
+    if (id == CR_TRADER && (r % 5) == 0) deriveFit();
     if (id == CR_WANDERER && (r % 3) == 0) earnCap(CAP_SCANNERS, (uint8_t)(s_p.cap[CAP_SCANNERS] + 1));
     if (id == CR_DEPTHRUNNER && (r % 2) == 0) earnCap(CAP_BULKHEADS, (uint8_t)(s_p.cap[CAP_BULKHEADS] + 1));
     if (id == CR_GHOST && (r % 3) == 0) earnCap(CAP_CLOAK, (uint8_t)(s_p.cap[CAP_CLOAK] + 1));
@@ -150,10 +150,20 @@ uint8_t rankOf(CareerId id) {
   return id < CR_COUNT ? s_p.rank[id] : 0;
 }
 
+// Capacities the fit decides, computed in one place so every upgrade lands.
+// Hold: 20 base, +14 per trailer mark, +3 per four Hauler ranks.
+// Fuel tank: 100, +8 per five Trader ranks, +6 per fuel system mark.
+void deriveFit() {
+  s_p.holdCap = (uint16_t)(20 + 14 * s_p.cap[CAP_TRAILER] + 3 * (s_p.rank[CR_HAULER] / 4));
+  s_p.fuelCap = (uint16_t)(100 + 8 * (s_p.rank[CR_TRADER] / 5) + 6 * s_p.cap[CAP_FUELSYS]);
+  if (s_p.fuel > s_p.fuelCap) s_p.fuel = s_p.fuelCap;
+}
+
 void earnCap(CapId id, uint8_t tier) {
   if (id >= CAP_COUNT) return;
   if (tier > 10) tier = 10;
   if (tier > s_p.cap[id]) s_p.cap[id] = tier;
+  deriveFit();
 }
 
 uint8_t capTier(CapId id) {
@@ -330,6 +340,7 @@ bool sheetLoad() {
   if (n == sizeof(s_p)) {
     prefs.getBytes("pilot", &s_p, sizeof(s_p));
     universeRestoreSeed(s_p.universeSeed);
+    deriveFit();
     ok = true;
   }
   prefs.end();

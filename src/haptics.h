@@ -14,6 +14,7 @@ enum Hum : uint8_t {
   HUM_DEEP,       // the ambient pressure of subspace
   HUM_BEAM,       // mining / scoop / tractor texture
   HUM_ENGINE,     // faint engine purr, felt on boost and autopilot
+  HUM_TURB,       // subspace turbulence (its own layer: never muddies the others)
   HUM_COUNT
 };
 

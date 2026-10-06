@@ -27,6 +27,7 @@ void grantXp(CareerId id, uint16_t amount);
 uint8_t rankOf(CareerId id);
 
 // ---- capability (earned → equipped, no slots) ----
+void deriveFit();                           // hold / tank from the fit and ranks
 void earnCap(CapId id, uint8_t tier);      // only raises tier, never manages slots
 uint8_t capTier(CapId id);
 

@@ -138,12 +138,13 @@ static inline void applyLens(float &sx, float &sy) {
   float push = clampf(lensR * lensR / d2, 0.f, 2.2f);
   sx += dx * push; sy += dy * push;
 }
+static float shakeX = 0.f, shakeY = 0.f;   // turbulence: the view shakes, the HUD does not
 static inline bool project(V3 w, float &sx, float &sy, float &z) {
   V3 c = shipB.toLocal(w - shipPos);
   z = c.z;
   if (z < 0.35f) return false;
   float k = FOCAL * fovPulse / z;
-  sx = W * 0.5f + c.x * k; sy = H * 0.5f - c.y * k;
+  sx = W * 0.5f + shakeX + c.x * k; sy = H * 0.5f + shakeY - c.y * k;
   applyLens(sx, sy);
   return true;
 }
@@ -151,7 +152,7 @@ static inline bool projectDir(V3 d, float &sx, float &sy) {
   V3 c = shipB.toLocal(d);
   if (c.z < 0.05f) return false;
   float k = FOCAL * fovPulse / c.z;
-  sx = W * 0.5f + c.x * k; sy = H * 0.5f - c.y * k;
+  sx = W * 0.5f + shakeX + c.x * k; sy = H * 0.5f + shakeY - c.y * k;
   applyLens(sx, sy);
   return true;
 }
@@ -1110,11 +1111,34 @@ static void addBoom(V3 p, float size, uint16_t col) {
   for (auto &b : booms) if (!b.alive) { b = {p, 0, size, col, true}; return; }
   booms[0] = {p, 0, size, col, true};
 }
-struct Bolt { float x0, y0, x1, y1; uint8_t life; uint16_t col; };
-static Bolt bolts[10];
+struct Bolt { float x0, y0, x1, y1; uint8_t life, thick; uint16_t col; };
+static Bolt bolts[16];
 static uint8_t boltN = 0;
-static void addBolt(float x0, float y0, float x1, float y1, uint16_t col) {
-  if (boltN < 10) bolts[boltN++] = {x0, y0, x1, y1, 7, col};
+static void addBolt(float x0, float y0, float x1, float y1, uint16_t col, uint8_t thick = 1, uint8_t life = 7) {
+  if (boltN < 16) bolts[boltN++] = {x0, y0, x1, y1, life, thick, col};
+}
+// particle missiles: curved screen paths with trails
+struct Missile { float x0, y0, cx, cy, x1, y1, t, dur; uint16_t col; bool alive; };
+static Missile missiles[10];
+static void addMissile(float x0, float y0, float x1, float y1, uint16_t col, float dur) {
+  for (auto &m : missiles) if (!m.alive) {
+    m = {x0, y0, (x0 + x1) * 0.5f + rf(-70, 70), fminf(y0, y1) - rf(20, 80), x1, y1, 0, dur, col, true};
+    return;
+  }
+}
+// short-lived sparks and flares in screen space
+struct Spark { float x, y, vx, vy, t; uint16_t col; };
+static Spark sparks[40];
+static uint8_t sparkN = 0;
+static void addSparks(float x, float y, int n, uint16_t col, float spd = 90.f) {
+  for (int i = 0; i < n && sparkN < 40; i++) { float a = rf(0, 6.283f), v = rf(0.3f, 1.f) * spd; sparks[sparkN++] = {x, y, cosf(a) * v, sinf(a) * v, 0, col}; }
+}
+static float shieldFx = 0.f, shieldFxX = 160, shieldFxY = 200;   // a deflection flare
+// mined rock: fragments fly, then a tractor beam pulls them home
+struct Frag { V3 p, v; float t; uint16_t col; bool alive; };
+static Frag frags[16];
+static void addFrags(V3 at, int n, uint16_t col) {
+  for (int i = 0; i < n; i++) for (auto &f : frags) if (!f.alive) { f = {at, randDir() * rf(6, 14), 0, col, true}; break; }
 }
 
 // ============================================================
@@ -1163,11 +1187,23 @@ static bool checkDestroy() {
   livesSeen = sm::sheet().lives;
   return died;
 }
-static bool damage(int amount) {
+static uint16_t shieldTint() {
+  uint8_t s = sm::capTier(sm::CAP_SHIELDS);
+  return s >= 7 ? rgb(255, 236, 170) : s >= 5 ? rgb(220, 200, 255) : s >= 3 ? rgb(120, 240, 255) : rgb(90, 160, 255);
+}
+// shielded: collisions, heat and fire are softened by the shields; reality glitches are not
+static bool damage(int amount, bool shielded = true) {
   if (amount > 0) {
-    sm::damageHull((uint16_t)amount);
-    hx::thud(clampf(amount / 25.f, 0.35f, 1.f));
-    hitFlash = 0.35f;
+    uint8_t s = sm::capTier(sm::CAP_SHIELDS);
+    if (shielded && s > 0) {
+      amount = (int)(amount * clampf(1.f - 0.07f * s, 0.35f, 1.f) + 0.5f);
+      shieldFx = 0.35f; shieldFxX = 160 + rf(-60, 60); shieldFxY = 190;
+    }
+    if (amount > 0) {
+      sm::damageHull((uint16_t)amount);
+      hx::thud(clampf(amount / 25.f, 0.35f, 1.f));
+      hitFlash = s > 0 && shielded ? 0.15f : 0.35f;
+    }
   }
   return checkDestroy();
 }
@@ -1188,6 +1224,7 @@ static bool bootOpen = true;  // title card until first tap
 static bool statusOpen = false;  // long-press C: pilot license + ship diagnostic (visual reference only)
 static uint8_t statusPage = 0;   // 0 license + diagnostic, 1 journal + active lead (hold C)
 static float newGameHold = 0, newGameDone = 0;   // splash: hold A + C
+static float cloakT = 0.f, cloakCD = 0.f;          // hold B: cloak (duration and cooldown grow with the mark)
 // Something in the deep, below the roads. Rare; no damage; you never see it clearly.
 struct AlienEncounter { bool active; uint8_t cls, outcome; float t, beatA, beatB, beatC; V3 p; bool applied; };
 static AlienEncounter alien{};
@@ -1635,17 +1672,20 @@ static int verbsFor(const Obj &o, Chip *out) {
   const uint16_t G = rgb(60, 200, 110), R = rgb(230, 70, 70), B = rgb(70, 140, 255), A = rgb(230, 170, 60),
                  C = rgb(80, 200, 230), V = rgb(180, 120, 255), Y = rgb(240, 205, 90);
   bool holdFull = p.holdUsed >= p.holdCap;
+  float reach = 1.f + 0.25f * sm::capTier(sm::CAP_SCANNERS);   // scanners: hail, scan, read and chart from further out
+  float gun = 1.f + 0.1f * sm::capTier(sm::CAP_WEAPONS);
+  float cut = 1.f + 0.12f * sm::capTier(sm::CAP_MINING);
   switch (o.kind) {
     case K_SHIP:
-      add(VB_HAIL, o.enc == sm::ENC_HOSTILE ? "SIGNAL" : "HAIL", G, 160, o.done ? "SILENT" : nullptr);
-      add(VB_ATTACK, "ATTACK", R, 90, nullptr);
+      add(VB_HAIL, o.enc == sm::ENC_HOSTILE ? "SIGNAL" : "HAIL", G, 160 * reach, o.done ? "SILENT" : nullptr);
+      add(VB_ATTACK, "ATTACK", R, 90 * gun, nullptr);
       break;
     case K_ANOMALY:
-      add(VB_SCAN, "SCAN", V, 140, o.done ? "READ" : nullptr);
-      add(VB_ATTACK, "ATTACK", R, 90, nullptr);
+      add(VB_SCAN, "SCAN", V, 140 * reach, o.done ? "READ" : nullptr);
+      add(VB_ATTACK, "ATTACK", R, 90 * gun, nullptr);
       break;
     case K_STATION: add(VB_DOCK, "DOCK", B, 0, nullptr); break;
-    case K_ROCK: add(VB_MINE, "MINE", A, 40, o.uses == 0 ? "SPENT" : (holdFull ? "HOLD FULL" : nullptr)); break;
+    case K_ROCK: add(VB_MINE, "MINE", A, 40 * cut, o.uses == 0 ? "SPENT" : (holdFull ? "HOLD FULL" : nullptr)); break;
     case K_BODY:
       if (isStarBody(o.bodyType)) {
         if (o.uses == 1) add(VB_SCOOP, "SCOOP", C, o.radius * 0.5f, p.fuel >= p.fuelCap ? "TANK FULL" : (o.timer > 0 ? "SETTLING" : nullptr));
@@ -1655,16 +1695,16 @@ static int verbsFor(const Obj &o, Chip *out) {
       if (o.bodyType == BT_GIANT)
         add(VB_SCOOP, "SCOOP", C, o.radius * 0.45f, p.fuel >= p.fuelCap ? "TANK FULL" : (o.timer > 0 ? "SETTLING" : nullptr));
       break;
-    case K_POD: add(VB_RESCUE, "RESCUE", G, 40, nullptr); break;
+    case K_POD: add(VB_RESCUE, "RESCUE", G, 40 * reach, nullptr); break;
     case K_WRECK:
-      add(VB_SALVAGE, "SALVAGE", A, 40, o.done ? "STRIPPED" : (holdFull ? "HOLD FULL" : nullptr));
-      add(VB_ATTACK, "ATTACK", R, 90, nullptr);
+      add(VB_SALVAGE, "SALVAGE", A, 40 * cut, o.done ? "STRIPPED" : (holdFull ? "HOLD FULL" : nullptr));
+      add(VB_ATTACK, "ATTACK", R, 90 * gun, nullptr);
       break;
     case K_ARTIFACT:
-      add(VB_READ, "READ", V, 55, o.done ? "READ" : nullptr);
-      add(VB_ATTACK, "ATTACK", R, 90, nullptr);
+      add(VB_READ, "READ", V, 55 * reach, o.done ? "READ" : nullptr);
+      add(VB_ATTACK, "ATTACK", R, 90 * gun, nullptr);
       break;
-    case K_LANDMARK: add(VB_CHART, "CHART", Y, 170, nullptr); break;
+    case K_LANDMARK: add(VB_CHART, "CHART", Y, 170 * reach, nullptr); break;
     default: break;
   }
   return n;
@@ -1796,6 +1836,16 @@ static void finishTheater() {
     // a fight that doesn't end in fire usually ends in someone leaving
     if (o.kind == K_SHIP && o.hostile && rf(0, 1) < 0.7f) { o.hostile = false; o.v = norm(o.p - shipPos) * 16.f; }
     if (o.kind == K_POD && !attack) { if (target == oi) target = -1; killObj(oi); }
+    else if (o.kind == K_ROCK && verb == VB_MINE && sm::capTier(sm::CAP_MINING) >= 3) {
+      // high-mark cutters: the rock goes, the tractor brings the pieces home
+      addBoom(o.p, o.radius * 2.f, rgb(255, 210, 140));
+      addFrags(o.p, 6 + sm::capTier(sm::CAP_MINING), o.col);
+      int extra = sm::capTier(sm::CAP_MINING);
+      if (sm::haulAdd("ore", (uint16_t)extra, true)) { char nb[48]; snprintf(nb, sizeof(nb), "TRACTOR: +%d ORE", extra); noteBanner(nb, 1400); }
+      hx::boom(0.6f);
+      if (target == oi) target = -1;
+      killObj(oi);
+    }
     else if (o.kind == K_ROCK && o.uses) o.uses--;
     else if (o.kind == K_SHIP && !o.hostile) o.v = norm(o.p - shipPos) * 14.f;
   }
@@ -1829,6 +1879,7 @@ static void runVerb(uint8_t id) {
     return;
   }
   if (id == VB_HAIL) setBanner("OPENING COMM...", 900);
+  if (id == VB_ATTACK && cloakT > 0.f) { cloakT = 0.f; cloakCD = fmaxf(15.f, 45.f - 4.f * sm::capTier(sm::CAP_CLOAK)); setBanner("CLOAK DROPS AS THE GUNS FIRE", 1200); }
   beginTheater(target, id);
 }
 
@@ -1847,8 +1898,10 @@ static void theaterTick() {
     if (theaterBeat > 0.24f) {
       theaterBeat = 0; volleys++;
       if (theaterVerb == VB_MINE || theaterVerb == VB_SALVAGE) {
-        addBolt(160, H - 6, sx + rf(-4, 4), sy + rf(-4, 4), theaterVerb == VB_MINE ? rgb(170, 255, 110) : rgb(255, 190, 110));
-        hx::pop(0.25f, 0.02f);
+        uint8_t mt = sm::capTier(sm::CAP_MINING);
+        addBolt(160, H - 6, sx + rf(-4, 4), sy + rf(-4, 4), theaterVerb == VB_MINE ? rgb(170, 255, 110) : rgb(255, 190, 110), mt >= 2 ? 2 : 1);
+        if (theaterVerb == VB_MINE && mt >= 2) addSparks(sx, sy, 2 + mt, mt >= 3 ? rgb(255, 240, 160) : rgb(255, 200, 120), 50.f + mt * 15.f);
+        hx::pop(0.25f + mt * 0.03f, 0.02f);
       }
       if (volleys >= maxVolleys) finishTheater();
     }
@@ -1857,14 +1910,38 @@ static void theaterTick() {
   if (theaterBeat > 0.3f) {   // combat
     theaterBeat = 0; volleys++;
     if (!ambushed || volleys > 1) {
-      addBolt(120, H - 4, sx + rf(-5, 5), sy + rf(-5, 5), rgb(130, 255, 190));
-      addBolt(200, H - 4, sx + rf(-5, 5), sy + rf(-5, 5), rgb(130, 255, 190));
-      hx::pop(0.55f, 0.03f);
+      // the guns, by mark: bolts, heavier bolts, lances, missiles, then something dazzling
+      uint8_t w = sm::capTier(sm::CAP_WEAPONS);
+      bool prism = w >= 6;
+      uint16_t c1 = prism ? hsv(tNow * 220.f, 0.6f, 1.f) : w >= 3 ? rgb(120, 245, 255) : rgb(130, 255, 190);
+      float tx = sx + rf(-5, 5), ty = sy + rf(-5, 5);
+      if (w <= 1) { addBolt(120, H - 4, tx, ty, c1); addBolt(200, H - 4, tx, ty, c1); }
+      else if (w == 2) {
+        addBolt(110, H - 4, tx, ty, c1, 2); addBolt(210, H - 4, tx, ty, c1, 2);
+        addSparks(110, H - 6, 3, rgb(255, 255, 200), 40); addSparks(210, H - 6, 3, rgb(255, 255, 200), 40);
+      } else {
+        addBolt(104, H - 4, tx, ty, c1, prism ? 4 : 3, 9); addBolt(216, H - 4, tx, ty, c1, prism ? 4 : 3, 9);
+        addSparks(tx, ty, prism ? 10 : 5, prism ? hsv(tNow * 300.f, 0.4f, 1.f) : rgb(200, 255, 255), 70);
+        if (w >= 4) for (int m = 0; m < w - 2 && m < 5; m++)
+          addMissile(m & 1 ? 230.f : 90.f, (float)(H - 8), tx + rf(-6, 6), ty + rf(-6, 6), prism ? hsv(m * 60.f + tNow * 200.f, 0.5f, 1.f) : rgb(255, 210, 120), 0.35f + m * 0.05f);
+      }
+      hx::pop(clampf(0.45f + w * 0.06f, 0.4f, 0.9f), 0.03f + w * 0.004f);
     }
     if ((rnd() % 100) < (uint32_t)(50 + layer * 6)) {
-      addBolt(sx, sy, 160 + rf(-40, 40), H - 10, rgb(255, 90, 70));
-      hx::thud(0.55f);
-      hitFlash = 0.18f;
+      // incoming: the shields take it, and sometimes turn it away
+      uint8_t sh = sm::capTier(sm::CAP_SHIELDS);
+      float ix = 160 + rf(-50, 50), iy = H - 30.f;
+      if (sh > 0 && rf(0, 1) < clampf(0.1f * sh, 0.f, 0.6f)) {
+        addBolt(sx, sy, ix, iy, rgb(255, 90, 70));
+        addBolt(ix, iy, ix + rf(-120, 120), iy - rf(60, 140), rgb(255, 160, 120));   // ricochet
+        shieldFx = 0.35f; shieldFxX = ix; shieldFxY = iy;
+        hx::pop(0.35f, 0.02f);
+      } else {
+        addBolt(sx, sy, ix, H - 10, rgb(255, 90, 70));
+        if (sh > 0) { shieldFx = 0.3f; shieldFxX = ix; shieldFxY = iy; hitFlash = 0.08f; }
+        else hitFlash = 0.18f;
+        hx::thud(sh > 0 ? 0.4f : 0.55f);
+      }
     }
     if (volleys >= maxVolleys) { ambushed = false; finishTheater(); }
   }
@@ -2117,7 +2194,7 @@ static void crossPortal(Obj &portal) {
   crossFlash = 1.f;
   layer = c.to;
   if (c.damage > 0) {
-    if (damage(c.damage)) return;
+    if (damage(c.damage, false)) return;
     setBanner(c.dry ? "DRY CLIMB - THE HULL PAYS FOR IT" : "GLITCH - REALITY SLIPS", 2200);
     hx::stutter(0.85f, 7, 0.07f);
   }
@@ -2385,6 +2462,20 @@ static void updateInput() {
   if (M5.BtnA.wasHold()) { mapOpen = true; mapPage = 0; mapTrace = -1; hx::pop(0.25f, 0.02f); return; }
   if (M5.BtnA.wasClicked()) cycleTarget();   // release edge: a hold never cycles
   if (M5.BtnC.wasHold()) { statusOpen = true; statusPage = 0; hx::pop(0.25f, 0.02f); return; }
+  if (M5.BtnB.wasHold()) {
+    uint8_t ct = sm::capTier(sm::CAP_CLOAK);
+    if (!ct) { setBanner("NO CLOAK FITTED", 1000); hx::pop(0.12f, 0.01f); }
+    else if (cloakT > 0.f) { cloakT = 0.f; cloakCD = fmaxf(15.f, 45.f - 4.f * ct) * 0.5f; setBanner("CLOAK DOWN", 900); }
+    else if (cloakCD > 0.f) { char b[32]; snprintf(b, sizeof(b), "CLOAK RECHARGING %ds", (int)cloakCD + 1); setBanner(b, 900); }
+    else {
+      cloakT = 8.f + 6.f * ct;
+      if (theater == TH_COMBAT) { theater = TH_NONE; theaterObj = -1; }
+      for (auto &o : objs) if (o.kind == K_SHIP && o.hostile) { o.engaged = false; o.timer = cloakT; o.v = o.v + randDir() * 6.f; }
+      setBanner("CLOAKED - THEY CANNOT SEE YOU", 1600);
+      hx::swell(0.45f, 0.3f, 0.6f);
+    }
+    return;
+  }
   if (M5.BtnB.wasClicked()) { captureNeutral(); tiltX = tiltY = tiltRoll = 0; rateYaw = ratePitch = rateRoll = 0; setBanner("ATTITUDE CENTERED", 900); hx::pop(0.2f, 0.02f); }
   if (M5.BtnC.wasClicked()) { throttleT = 0.5f; setBanner("CRUISE", 700); hx::pop(0.2f, 0.02f); }   // release edge: a hold opens status
 
@@ -2419,7 +2510,82 @@ static void updateInput() {
 // ============================================================
 //  world update
 // ============================================================
-static float cruiseSpeed() { return layer == 0 ? 13.f : 15.f + layer * 2.5f; }
+// stabilizers make the ship faster where the going is rough: a little in real space, more below
+static float cruiseSpeed() {
+  float st = sm::capTier(sm::CAP_STABILIZER);
+  return layer == 0 ? 13.f * (1.f + 0.015f * st) : (15.f + layer * 2.5f) * (1.f + 0.04f * st);
+}
+
+// Turbulence. Real space: at most a faint tremble near portals and heavy bodies.
+// Subspace: it is the depth that bites. A stabilizer rated for the layer (MK1 the
+// shallows ... MK4 the cove) damps most of it to a tremble and a softened rattle;
+// unrated, it grows with every layer it lacks, and past the hull's depth rating it
+// stresses the hull. An unrated ship in the deep cove should not expect to survive.
+// Each tier of marks has its own character: MK0-1 jolts, MK2-3 a damped sway,
+// MK4-5 a slow glide, MK6+ phase-locked (no kicks at all, portals draw you true).
+static float turbulence = 0.f, turbFilt[2] = {0, 0}, turbSeverity = 0.f, hullStress = 0.f, stressT = 0.f;
+static bool turbRated = true;
+static uint8_t stabMode() { uint8_t s = sm::capTier(sm::CAP_STABILIZER); return s <= 1 ? 0 : s <= 3 ? 1 : s <= 5 ? 2 : 3; }
+static void applyTurbulence() {
+  static const float layerT[5] = {0.f, 0.08f, 0.18f, 0.32f, 0.45f};
+  float T = layerT[layer < 0 ? 0 : (layer > 4 ? 4 : layer)];
+  for (auto &o : objs) {
+    if (o.kind == K_PORTAL) { float d = distTo(o); if (d < 140.f) T += 0.6f * (1.f - d / 140.f); }
+    if (o.kind == K_BODY) {
+      float sd = surfaceDist(o);
+      if (o.bodyType == BT_HOLE && sd < o.radius * 14.f) T += 0.7f * (1.f - sd / (o.radius * 14.f));
+      else if (o.bodyType == BT_GIANT && sd < o.radius * 0.3f) T += 0.3f * (1.f - sd / (o.radius * 0.3f));
+      else if (isStarBody(o.bodyType) && sd < o.radius * 0.6f) T += 0.25f * (1.f - sd / (o.radius * 0.6f));
+    }
+  }
+  turbulence = clampf(T, 0.f, 1.f);
+  shakeX = shakeY = 0.f;
+  turbSeverity = 0.f; hullStress = 0.f; turbRated = true;
+  if (turbulence < 0.01f) return;
+  if (layer == 0) {   // real space: only the faintest tremble
+    shakeX = rf(-1, 1) * turbulence * 0.8f; shakeY = rf(-1, 1) * turbulence * 0.8f;
+    return;
+  }
+  uint8_t st = sm::capTier(sm::CAP_STABILIZER);
+  int lacking = layer - (st > 4 ? 4 : st);                     // layers this stabilizer is not rated for
+  int overHull = layer - (int)sm::depthQuery((uint8_t)layer).maxBand;
+  turbRated = lacking <= 0;
+  float S = turbulence * (turbRated ? 0.25f : 1.f + 0.8f * lacking) * (overHull > 0 ? 1.f + 0.6f * overHull : 1.f);
+  turbSeverity = S;
+  hullStress = (overHull > 0 ? (float)overHull : 0.f) + (lacking > 1 ? (lacking - 1) * 0.5f : 0.f);
+  float kick = S / (1.f + 0.5f * st);                           // heading kicks: what the stabilizer removes
+  // the shake is not damped by being rated: a rated ship still sees and feels the road
+  float shakeS = turbulence * (turbRated ? 1.f : 1.f + 0.8f * lacking) * (overHull > 0 ? 1.f + 0.6f * overHull : 1.f);
+  float shk = shakeS / (1.f + 0.12f * st);
+  uint8_t m = stabMode();
+  if (m == 0) {           // undamped: jolts
+    float jx = rf(-1, 1), jy = rf(-1, 1);
+    shipB.yaw(jx * kick * 2.7f * dt); shipB.pitch(jy * kick * 2.7f * dt);
+    shakeX = jx * shk * 6.f; shakeY = jy * shk * 6.f;
+  } else if (m == 1) {    // gyro: the same forces, smoothed into a sway
+    float k = 1.f - expf(-dt / 0.25f);
+    turbFilt[0] += (rf(-1, 1) - turbFilt[0]) * k; turbFilt[1] += (rf(-1, 1) - turbFilt[1]) * k;
+    shipB.yaw(turbFilt[0] * kick * 1.4f * dt); shipB.pitch(turbFilt[1] * kick * 1.4f * dt);
+    shakeX = turbFilt[0] * shk * 5.f + rf(-1, 1) * shk; shakeY = turbFilt[1] * shk * 5.f + rf(-1, 1) * shk;
+  } else {                // inertial glide, or phase-locked: no kicks, only the road under you
+    float gx = sinf(tNow * 0.6f * 6.283f) * 0.6f + sinf(tNow * 0.37f * 6.283f) * 0.4f, gy = cosf(tNow * 0.45f * 6.283f);
+    if (m == 2) { shipB.yaw(gx * kick * 0.6f * dt); shipB.pitch(gy * kick * 0.4f * dt); }
+    shakeX = gx * shk * 3.f + rf(-1, 1) * shk * 2.5f; shakeY = gy * shk * 1.5f + rf(-1, 1) * shk * 2.5f;
+  }
+  shipB.fix();
+  shakeX = clampf(shakeX, -12.f, 12.f); shakeY = clampf(shakeY, -12.f, 12.f);   // the danger is the kicks and the stress, not a leaping screen
+  // past the rating the hull takes the strain
+  if (hullStress > 0.f) {
+    stressT += dt * (0.4f + turbulence * 2.f);
+    float every = clampf(2.8f / hullStress, 0.5f, 4.f);
+    if (stressT >= every) {
+      stressT = 0.f;
+      setBanner(hullStress >= 2.f ? "HULL STRESS - THE FRAME IS SCREAMING" : "HULL STRESS - PAST RATING", 1000);
+      hx::thud(clampf(0.4f + hullStress * 0.15f, 0.4f, 1.f));
+      damage((int)(hullStress + 0.5f), false);
+    }
+  } else stressT = 0.f;
+}
 static float speedWanted() {
   // 0 .. 0.5 ramps stop..cruise, 0.5 .. 1 ramps cruise..boost (2x)
   float c = cruiseSpeed();
@@ -2476,7 +2642,7 @@ static void updateContacts() {
     if (o.kind == K_SHIP) {
       V3 toMe = shipPos - o.p;
       float d = len(toMe);
-      if (o.hostile && !o.engaged && o.timer <= 0 && theater == TH_NONE) {
+      if (o.hostile && !o.engaged && o.timer <= 0 && theater == TH_NONE && cloakT <= 0.f) {
         // hunters bend toward you
         o.v = o.v + (norm(toMe) * 12.f - o.v) * clampf(dt * 0.9f, 0, 1);
         if (d < 42.f) {
@@ -2596,6 +2762,16 @@ static void heatWorld() {
 }
 
 static void hapticWorld() {
+  // turbulence, felt (subspace only, on its own channel). Rated: a dampened texture.
+  if (layer > 0 && turbulence > 0.08f) {
+    float lv = turbRated ? 0.1f + 0.2f * turbulence : clampf(0.25f + 0.5f * turbSeverity, 0.f, 0.95f);
+    switch (stabMode()) {
+      case 0: hx::hum(hx::HUM_TURB, lv, 0.f, turbRated ? 0.4f : 0.9f); break;   // rattle
+      case 1: hx::hum(hx::HUM_TURB, lv, 3.f, turbRated ? 0.15f : 0.35f); break; // sway
+      case 2: hx::hum(hx::HUM_TURB, lv, 0.8f, 0.f); break;                      // heave
+      default: hx::hum(hx::HUM_TURB, lv * 0.8f, 6.f, 0.f); break;               // purr
+    }
+  }
   // heavy bodies: a slow tidal throb that grows as you close in
   for (auto &o : objs) {
     if (o.kind != K_BODY) continue;
@@ -2628,6 +2804,7 @@ static void hapticWorld() {
 }
 
 static void updateWorld() {
+  shakeX = shakeY = 0.f;   // turbulence sets it each flying frame; overlays never inherit a stale shake
   sm::simTick(millis());
   sm::contractTick();
   serviceBanner();
@@ -2671,13 +2848,14 @@ static void updateWorld() {
       if (c.z < 4.f || c.z > 50.f) continue;
       float off = sqrtf(c.x * c.x + c.y * c.y) / c.z;
       if (off > 0.45f) continue;
-      float k = (1.f - off / 0.45f) * 0.55f * dt;
+      float k = (1.f - off / 0.45f) * 0.55f * dt * (1.f + 0.12f * sm::capTier(sm::CAP_STABILIZER)) * (stabMode() == 3 && g.kind == K_PORTAL ? 1.8f : 1.f);
       shipB.yaw(clampf(atan2f(c.x, c.z), -k, k));
       shipB.pitch(clampf(-atan2f(c.y, c.z), -k, k));
       break;
     }
     shipB.fix();
   }
+  applyTurbulence();
   float want = speedWanted();
   if (theater == TH_COMBAT || theater == TH_BEAM) want = fminf(want, cruiseSpeed() * 0.4f);
   if (sm::sheet().fuel == 0 && layer == 0) want *= 0.6f;
@@ -2727,6 +2905,29 @@ static void updateWorld() {
   }
 
   for (int i = 0; i < boltN; ) { if (--bolts[i].life == 0) bolts[i] = bolts[--boltN]; else i++; }
+  for (auto &m : missiles) if (m.alive) {
+    m.t += dt;
+    if (m.t >= m.dur) { m.alive = false; addSparks(m.x1, m.y1, 8, m.col, 110); hx::pop(0.3f, 0.02f); }
+  }
+  for (int i = 0; i < sparkN; ) {
+    Spark &sp = sparks[i]; sp.t += dt; sp.x += sp.vx * dt; sp.y += sp.vy * dt;
+    if (sp.t > 0.45f) sparks[i] = sparks[--sparkN]; else i++;
+  }
+  for (auto &f : frags) if (f.alive) {
+    f.t += dt;
+    if (f.t < 0.55f) f.p += f.v * dt;
+    else {   // the tractor: pull it home
+      V3 home = shipPos + shipB.f * 3.f - shipB.u * 2.f;
+      f.p = lerp3(f.p, home, clampf(dt * 3.5f, 0, 1));
+      if (len(f.p - home) < 1.5f || f.t > 2.5f) { f.alive = false; hx::pop(0.12f, 0.01f); }
+    }
+  }
+  if (shieldFx > 0.f) shieldFx -= dt;
+  if (cloakT > 0.f) {
+    cloakT -= dt;
+    hx::hum(hx::HUM_ENGINE, 0.06f, 2.f, 0.f);
+    if (cloakT <= 0.f) { cloakT = 0.f; cloakCD = fmaxf(15.f, 45.f - 4.f * sm::capTier(sm::CAP_CLOAK)); setBanner("CLOAK DOWN", 1000); hx::pop(0.25f, 0.03f); }
+  } else if (cloakCD > 0.f) cloakCD -= dt;
   for (auto &b : booms) if (b.alive) { b.t += dt; if (b.t > 1.3f) b.alive = false; }
   if (millis() > lastSave + 30000) saveAll();
   serviceSD(false);
@@ -2912,7 +3113,47 @@ static void drawBoomsAndBolts() {
   for (int i = 0; i < boltN; i++) {
     const Bolt &b = bolts[i];
     cv.drawLine((int)b.x0, (int)b.y0, (int)b.x1, (int)b.y1, b.col);
-    if (b.life > 4) cv.drawLine((int)b.x0 + 1, (int)b.y0, (int)b.x1 + 1, (int)b.y1, rgb(255, 255, 220));
+    for (int k = 1; k < b.thick; k++) {   // lances: a glow either side, a white-hot core
+      cv.drawLine((int)b.x0 + k, (int)b.y0, (int)b.x1 + k, (int)b.y1, k == 1 && b.life > 3 ? rgb(255, 255, 240) : shade(b.col, 0.6f));
+      cv.drawLine((int)b.x0 - k, (int)b.y0, (int)b.x1 - k, (int)b.y1, shade(b.col, 0.45f));
+    }
+    if (b.thick <= 1 && b.life > 4) cv.drawLine((int)b.x0 + 1, (int)b.y0, (int)b.x1 + 1, (int)b.y1, rgb(255, 255, 220));
+  }
+  for (auto &m : missiles) {   // particle missiles: a bright head and a fading trail
+    if (!m.alive) continue;
+    for (int k = 0; k < 6; k++) {
+      float u = clampf(m.t / m.dur - k * 0.05f, 0.f, 1.f), iu = 1.f - u;
+      float x = iu * iu * m.x0 + 2 * u * iu * m.cx + u * u * m.x1, y = iu * iu * m.y0 + 2 * u * iu * m.cy + u * u * m.y1;
+      if (k == 0) cv.fillCircle((int)x, (int)y, 2, rgb(255, 255, 230));
+      else cv.drawPixel((int)x, (int)y, shade(m.col, 1.f - k * 0.15f));
+    }
+  }
+  for (int i = 0; i < sparkN; i++) cv.drawPixel((int)sparks[i].x, (int)sparks[i].y, shade(sparks[i].col, 1.f - sparks[i].t * 2.f));
+  for (auto &f : frags) {   // fragments and the tractor beam bringing them in
+    if (!f.alive) continue;
+    float x, y, z;
+    if (!project(f.p, x, y, z)) continue;
+    if (f.t > 0.55f) {   // the tractor: a steady pale line, pulsing brighter along its length
+      cv.drawLine((int)x, (int)y, 160, H - 8, shade(rgb(110, 230, 255), 0.5f + 0.3f * fsin(tNow * 12.f + f.p.x)));
+      float u = fmodf(tNow * 2.f + f.p.y, 1.f);
+      cv.fillRect((int)(x + (160 - x) * u), (int)(y + (H - 8 - y) * u), 2, 2, rgb(200, 250, 255));
+    }
+    cv.fillRect((int)x - 1, (int)y - 1, 3, 3, f.col);
+    cv.drawPixel((int)x, (int)y, rgb(255, 230, 180));
+  }
+  if (shieldFx > 0.f) {   // the shield takes the hit: arcs flaring around the impact
+    uint16_t sc = shieldTint();
+    float k = shieldFx / 0.35f;
+    for (int r = 0; r < 3; r++) {
+      int rad = (int)(14 + r * 9 + (1.f - k) * 22);
+      for (int a = 0; a < 7; a++) {
+        float ang = 3.6f + a * 0.32f + r * 0.11f;
+        int x0 = (int)(shieldFxX + cosf(ang) * rad), y0 = (int)(shieldFxY + sinf(ang) * rad * 0.6f);
+        int x1 = (int)(shieldFxX + cosf(ang + 0.22f) * rad), y1 = (int)(shieldFxY + sinf(ang + 0.22f) * rad * 0.6f);
+        cv.drawLine(x0, y0, x1, y1, shade(sc, k * (1.f - r * 0.25f)));
+      }
+    }
+    if (k > 0.6f) { cv.drawRect(0, 0, W, H, shade(sc, k * 0.8f)); }
   }
   if (theaterObj >= 0 && objs[theaterObj].kind != K_NONE) {
     float sx, sy, z;
@@ -2965,8 +3206,9 @@ static void drawTargeting() {
   cv.drawLine(x1, y1, x1 - L, y1, bc); cv.drawLine(x1, y1, x1, y1 - L, bc);
   char info[40];
   int sd = (int)(surfaceDist(o) * 10); if (sd < 0) sd = 0;
+  bool known = o.kind != K_SHIP || surfaceDist(o) < 120.f + 60.f * sm::capTier(sm::CAP_SCANNERS);   // scanners identify at range
   if (o.kind == K_GATE && (o.gflags & GF_DEST)) snprintf(info, sizeof(info), "%dm", sd);
-  else snprintf(info, sizeof(info), "%s %dm", o.name, sd);
+  else snprintf(info, sizeof(info), "%s %dm", known ? o.name : "UNIDENTIFIED", sd);
   cv.setTextColor(bc);
   cv.setCursor((int)clampf(sx - (float)strlen(info) * 3, 2, (float)(SLIDER_X - 4) - (float)strlen(info) * 6), (int)clampf((float)y1 + 3, 36, 206));
   cv.print(info);
@@ -3054,6 +3296,30 @@ static void drawHud() {
     if (tr.active && l == tr.destDepth) cv.drawRect(1, y - 1, 9, 12, rgb(240, 210, 120));
   }
 
+  // the stabilizer at work, when there is something to work against
+  if (layer > 0 && turbulence > 0.15f) {
+    static const char *names[4] = {"TURBULENCE", "GYRO DAMPING", "INERTIAL GLIDE", "PHASE-LOCKED"};
+    if (hullStress > 0.f || !turbRated) {
+      const char *w = hullStress > 0.f ? "PAST RATING" : "STABILIZER UNRATED";
+      cv.setTextColor(((int)(tNow * 4.f) & 1) ? rgb(255, 80, 60) : rgb(150, 40, 30)); cv.setCursor(160 - (int)strlen(w) * 3, 46); cv.print(w);
+    }
+    static const uint16_t cols[4] = {rgb(255, 120, 90), rgb(240, 200, 110), rgb(140, 220, 255), rgb(120, 255, 210)};
+    uint8_t m = stabMode();
+    cv.setTextColor(cols[m]); cv.setCursor(160 - (int)strlen(names[m]) * 3, 36); cv.print(names[m]);
+    if (m == 3) cv.drawCircle(160, 120, 108 + (int)(4.f * sinf(tNow * 6.f)), shade(cols[3], 0.3f + 0.4f * turbulence));
+    if (m == 1) cv.drawCircle(160 + (int)(shakeX * 3.f), 120 + (int)(shakeY * 3.f), 14, shade(cols[1], 0.5f));
+  }
+  // cloak: a shimmer at the edges, and the time left (or the recharge)
+  if (cloakT > 0.f) {
+    uint16_t cc = rgb(140, 230, 220);
+    for (int i = 0; i < 6; i++) {
+      int y = (int)fmodf(tNow * 90.f + i * 40.f, (float)H);
+      cv.drawLine(0, y, 6, y + 8, cc); cv.drawLine(W - 1, H - y, W - 7, H - y - 8, cc);
+    }
+    cv.setTextColor(cc); cv.setCursor(118, 56); cv.printf("CLOAKED %ds", (int)cloakT + 1);
+  } else if (cloakCD > 0.f && sm::capTier(sm::CAP_CLOAK)) {
+    cv.setTextColor(rgb(80, 110, 110)); cv.setCursor(124, 56); cv.printf("CLOAK %ds", (int)cloakCD + 1);
+  }
   // throttle slider, right edge: drag to set; a detent at cruise
   int ty = SLIDER_Y1 - (int)(throttleT * (SLIDER_Y1 - SLIDER_Y0));
   int cy = (SLIDER_Y0 + SLIDER_Y1) / 2;

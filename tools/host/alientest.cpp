@@ -6,6 +6,7 @@ static void frame() { uint32_t now=millis(); static uint32_t prev=now; dt=clampf
 static void snap(const char *n) { char p[64]; snprintf(p,sizeof p,"snaps/%s.log",n); g_log=fopen(p,"w"); draw(); fclose(g_log); g_log=nullptr; }
 int main() {
   setup(); bootOpen = false; bannerUntil = 0; crossFlash = 0;
+  sm::earnCap(sm::CAP_BULKHEADS, 4); sm::earnCap(sm::CAP_STABILIZER, 4);   // rated for the deep: measure only the visitor
   int fails = 0;
   for (int cls = 0; cls < 3; cls++) {
     sm::Trip &tr = sm::trip(); tr.active = 1; tr.destDepth = 4; tr.layer = 3; tr.step = 0; strcpy(tr.dest, "TEST");

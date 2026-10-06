@@ -107,6 +107,7 @@ bool sdLoadGame(void *session, uint16_t sessionLen) {
   }
   if (ok) {
     sheet() = *p; contract() = *c; atlas() = *a; journal() = *j;
+    deriveFit();   // older saves: the trailer finally counts
     memcpy(session, ses, sessionLen);
   }
   delete p; delete c; delete a; delete j; delete[] ses;

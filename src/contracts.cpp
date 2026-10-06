@@ -10,6 +10,7 @@
 
 namespace sm {
 namespace {
+inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 Contract s_c{};
 Contract s_offer{};
 Contract s_done{};
@@ -113,6 +114,13 @@ bool roll(Contract &o, ContractKind k) {
   }
   // deeper destinations pay for the dive
   if (o.destDepth > 1) o.pay = (int16_t)(o.pay + (o.destDepth - 1) * 45);
+  // cargo work scales with the trailer: bigger loads, bigger pay
+  if (isCargo(k)) o.pay = (int16_t)(o.pay * (1.f + 0.22f * sheet().cap[CAP_TRAILER]));
+  // a market run: you buy the load, so the pay covers it and then some
+  if (k == CK_MARKET) {
+    int qty = 2 + rankOf(CR_TRADER) / 4 + 3 * sheet().cap[CAP_TRAILER];
+    o.pay = (int16_t)clampf(o.pay + qty * marketPrice("spice", true), 0.f, 32000.f);
+  }
   return true;
 }
 
@@ -188,17 +196,19 @@ bool contractAccept(const Contract &offer) {
   c.live = 1;
   c.progress = 0;
   // Cargo is acquired when the pilot commits; the offer roll has no side effects.
+  uint16_t load = (uint16_t)(3 * sheet().cap[CAP_TRAILER]);   // a bigger trailer carries a bigger contract
   if (c.kind == CK_HAUL) {
-    if (!haulAdd("crate", (uint16_t)(3 + rankOf(CR_HAULER) / 3), true)) return false;
+    if (!haulAdd("crate", (uint16_t)(3 + rankOf(CR_HAULER) / 3 + load), true)) return false;
   } else if (c.kind == CK_SUPPLY) {
-    if (!haulAdd("machine parts", (uint16_t)(2 + rankOf(CR_HAULER) / 4), true)) return false;
+    if (!haulAdd("machine parts", (uint16_t)(2 + rankOf(CR_HAULER) / 4 + load), true)) return false;
   } else if (c.kind == CK_SMUGGLE) {
-    if (!haulAdd("sealed tin", (uint16_t)(2 + rankOf(CR_GHOST) / 4), false)) return false;
+    if (!haulAdd("sealed tin", (uint16_t)(2 + rankOf(CR_GHOST) / 4 + load / 2), false)) return false;
     addHeat(HEAT_SECURITY, 6);
   } else if (c.kind == CK_MARKET) {
-    int cost = marketPrice("spice", true) * 2;
+    uint16_t qty = (uint16_t)(2 + rankOf(CR_TRADER) / 4 + load);
+    int cost = marketPrice("spice", true) * qty;
     if (sheet().credits < cost) return false;
-    if (!haulAdd("spice", (uint16_t)(2 + rankOf(CR_TRADER) / 4), true)) return false;
+    if (!haulAdd("spice", qty, true)) return false;
     spendCredits(cost);
   }
   s_c = c;
