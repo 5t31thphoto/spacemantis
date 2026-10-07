@@ -79,8 +79,7 @@ void onDestroy() {
   s_p.hull = s_p.hullMax;
   s_p.fuel = s_p.fuelCap;
   // haul does not auto-survive a hard loss — inconvenient
-  s_p.haulN = 0;
-  memset(s_p.haul, 0, sizeof(s_p.haul));
+  haulClear();   // lines AND the used count (the count was left behind before)
   // strip non-persist flags
   uint8_t w = 0;
   for (uint8_t i = 0; i < s_p.flagN; i++) {
@@ -168,6 +167,7 @@ uint8_t rankOf(CareerId id) {
 // Hold: 20 base, +14 per trailer mark, +3 per four Hauler ranks.
 // Fuel tank: 100, +8 per five Trader ranks, +6 per fuel system mark.
 void deriveFit() {
+  haulRecount();
   s_p.holdCap = (uint16_t)(shipSpec(s_p.activeShip).holdBase + 14 * s_p.cap[CAP_TRAILER] + 3 * (s_p.rank[CR_HAULER] / 4));
   s_p.fuelCap = (uint16_t)(100 + 8 * (s_p.rank[CR_TRADER] / 5) + 6 * s_p.cap[CAP_FUELSYS]);
   if (s_p.fuel > s_p.fuelCap) s_p.fuel = s_p.fuelCap;
@@ -230,6 +230,20 @@ void coolHeat(uint8_t amount) {
   }
 }
 
+// The used hold is the sum of the lines: recomputed, never trusted on its own.
+void haulRecount() {
+  uint32_t used = 0;
+  uint8_t w = 0;
+  for (uint8_t i = 0; i < s_p.haulN && i < MAX_HAUL_LINES; i++) {
+    if (s_p.haul[i].amount == 0 || !s_p.haul[i].what[0]) continue;   // drop empty lines
+    if (w != i) s_p.haul[w] = s_p.haul[i];
+    used += s_p.haul[w].amount; w++;
+  }
+  for (uint8_t i = w; i < MAX_HAUL_LINES; i++) memset(&s_p.haul[i], 0, sizeof(HaulLine));
+  s_p.haulN = w;
+  s_p.holdUsed = (uint16_t)(used > 65535 ? 65535 : used);
+}
+
 bool haulAdd(const char *what, uint16_t amount, bool legal) {
   if (!what || amount == 0) return false;
   if ((uint32_t)s_p.holdUsed + amount > s_p.holdCap) return false;
@@ -238,7 +252,7 @@ bool haulAdd(const char *what, uint16_t amount, bool legal) {
     if (strncmp(s_p.haul[i].what, what, NAME_LEN) == 0) {
       s_p.haul[i].amount = (uint16_t)(s_p.haul[i].amount + amount);
       if (!legal) s_p.haul[i].legal = 0;
-      s_p.holdUsed = (uint16_t)(s_p.holdUsed + amount);
+      haulRecount();
       return true;
     }
   }
@@ -248,7 +262,7 @@ bool haulAdd(const char *what, uint16_t amount, bool legal) {
   h.what[NAME_LEN - 1] = 0;
   h.amount = amount;
   h.legal = legal ? 1 : 0;
-  s_p.holdUsed = (uint16_t)(s_p.holdUsed + amount);
+  haulRecount();
   return true;
 }
 
@@ -263,10 +277,10 @@ uint16_t haulRemove(const char *what) {
   for (uint8_t i = 0; i < s_p.haulN; i++) {
     if (strncmp(s_p.haul[i].what, what, NAME_LEN) != 0) continue;
     uint16_t amt = s_p.haul[i].amount;
-    s_p.holdUsed = (uint16_t)(s_p.holdUsed > amt ? s_p.holdUsed - amt : 0);
     for (uint8_t j = i; j + 1 < s_p.haulN; j++) s_p.haul[j] = s_p.haul[j + 1];
     s_p.haulN--;
     memset(&s_p.haul[s_p.haulN], 0, sizeof(HaulLine));
+    haulRecount();
     return amt;
   }
   return 0;
@@ -279,7 +293,7 @@ uint16_t haulTake(const char *what, uint16_t n) {
     uint16_t take = n < s_p.haul[i].amount ? n : s_p.haul[i].amount;
     if (take >= s_p.haul[i].amount) return haulRemove(what);
     s_p.haul[i].amount = (uint16_t)(s_p.haul[i].amount - take);
-    s_p.holdUsed = (uint16_t)(s_p.holdUsed > take ? s_p.holdUsed - take : 0);
+    haulRecount();
     return take;
   }
   return 0;

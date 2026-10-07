@@ -195,8 +195,19 @@ void contractSetLanes(const char *const *names, const uint8_t *depths, const uin
 
 bool contractDueHere(const char *place) { return s_c.live && hasDest(s_c.kind) && sameName(s_c.dest, place); }
 
+bool contractCargoGone() {
+  const char *cg = s_c.live ? contractCargo(s_c.kind) : nullptr;
+  return cg && s_c.cargoQty > 0 && haulCount(cg) == 0;
+}
+
 bool contractDeliverHere(const char *place) {
   if (!contractDueHere(place)) return false;
+  const char *cg = contractCargo(s_c.kind);
+  if (cg && s_c.cargoQty > 0) {
+    uint16_t have = haulCount(cg);
+    if (have == 0) return false;                                            // nothing left to hand over
+    if (have < s_c.cargoQty) s_c.pay = (int16_t)((int32_t)s_c.pay * have / s_c.cargoQty);   // paid for what arrived
+  }
   s_c.progress = s_c.need;
   complete();
   return true;
@@ -223,6 +234,7 @@ bool contractAccept(const Contract &offer) {
     if (!haulAdd("spice", qty, true)) return false;
     spendCredits(cost);
   }
+  { const char *cg = contractCargo(c.kind); c.cargoQty = cg ? haulCount(cg) : 0; }   // what the job put aboard
   s_c = c;
   return true;
 }

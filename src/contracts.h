@@ -38,6 +38,7 @@ struct Contract {
   uint8_t need;
   uint8_t live;            // 1 active
   uint8_t issuer;          // who posted it (brand: 3 = Deseret)
+  uint16_t cargoQty;       // how much cargo the job loaded (deliveries pay for what arrives)
 };
 
 void contractsInit();
@@ -48,7 +49,8 @@ bool contractDueHere(const char *place);      // a delivery is payable at this p
 void contractSetBand(uint8_t band);
 void contractSetIssuer(uint8_t brand);        // the dock posting work (Deseret work builds standing)           // where the pilot is: deep jobs only count below
 bool contractOfferDeep();                     // the board at a deep outpost
-bool contractDeliverHere(const char *place);  // pay it (at the dock)
+bool contractDeliverHere(const char *place);  // pay it (at the dock); false if the cargo is gone
+bool contractCargoGone();                     // a cargo job whose load is no longer aboard
 Contract &contract();
 bool contractOffer(ContractKind prefer = CK_NONE);  // roll a new offer onto station board
 bool contractAccept(const Contract &offer);          // false if hold or purse refuses

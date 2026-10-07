@@ -28,6 +28,7 @@ uint8_t rankOf(CareerId id);
 
 // ---- capability (earned → equipped, no slots) ----
 void deriveFit();
+void haulRecount();                         // used hold = sum of lines (call after any direct edit)
 int32_t shipRecoverFee(uint8_t t);
 uint8_t takeLostShip();          // 255 = none lost in the last pod launch
 bool shipSwap(uint8_t t);          // in a hangar; the hold must be empty (commodities do not survive the phase)

@@ -2405,7 +2405,11 @@ static void stationCommit() {
       break;
     }
     case 1:   // work: deliver here, drop the lead, or take the board's job
-      if (dueHereNow()) { sm::contractDeliverHere(hereName); hx::swell(0.5f, 0.1f, 0.3f); break; }
+      if (dueHereNow()) {
+        if (sm::contractDeliverHere(hereName)) hx::swell(0.5f, 0.1f, 0.3f);
+        else { sm::contractAbandon(); setBanner("THE CARGO IS GONE - THE JOB IS VOID", 1800); hx::pop(0.15f, 0.02f); }
+        break;
+      }
       if (sm::contract().live) { sm::contractAbandon(); setBanner("LEAD DROPPED", 1400); break; }
       if (sm::contractAccept(off)) {
         snprintf(buf, sizeof(buf), "ACCEPTED: %s", off.title); setBanner(buf, 2000);
@@ -3960,13 +3964,16 @@ static void drawStation() {
     int rc = refuelCost();
     if (rc > 0) snprintf(rows[0], 44, "REFUEL / REPAIR  %dcr", rc); else snprintf(rows[0], 44, "REFUEL / REPAIR  topped up");
     bool dueHere = dueHereNow();
-    if (dueHere) snprintf(rows[1], 44, "DELIVER: %s +%d", c.title, c.pay);
+    if (dueHere && sm::contractCargoGone()) snprintf(rows[1], 44, "CARGO GONE: %s (VOID)", c.title);
+    else if (dueHere) snprintf(rows[1], 44, "DELIVER: %s +%d", c.title, c.pay);
     else if (c.live) snprintf(rows[1], 44, "DROP LEAD: %s", c.title);
     else snprintf(rows[1], 44, "WORK: %s +%d", off.title, off.pay);
     if (layer > 0) snprintf(rows[2], 44, "RUMORS: nobody sells names");
     else snprintf(rows[2], 44, "BUY A RUMOR  %dcr", rumorPrice());
     int sell = sellableValue(false);
-    if (sell > 0) snprintf(rows[3], 44, "SELL ALL HAUL  +%dcr", sell); else snprintf(rows[3], 44, "HOLD EMPTY - SEE MARKET");
+    if (sell > 0) snprintf(rows[3], 44, "SELL ALL HAUL  +%dcr", sell);
+    else if (p.holdUsed > 0) snprintf(rows[3], 44, "NOTHING THEY BUY HERE (%u ABOARD)", p.holdUsed);   // scans, your lead's cargo
+    else snprintf(rows[3], 44, "HOLD EMPTY - SEE MARKET");
     if (opportunityTaken) snprintf(rows[4], 44, "BOARD: (taken)"); else snprintf(rows[4], 44, "BOARD: %s +%d", stationOpportunity.title, stationOpportunity.reward);
     snprintf(rows[5], 44, "LAUNCH");
     for (int i = 0; i < STATION_ROWS; ++i) {

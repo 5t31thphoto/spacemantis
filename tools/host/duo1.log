@@ -1,0 +1,17 @@
+[dev1] ok   signals on: the dock grows a SIGNAL button
+[dev1] ok   portal commissioned, seeking
+[dev1] ok   paired with the other pilot: the gate turns green
+[dev1]    role ANCHOR, peer MANTIS-3456, seed d0251fa8
+[dev1] ok   launched toward the magenta gate
+[dev1] ok   the experimental wake one layer down
+[dev1] ok   arrived in the shared sky (haywire)
+[dev1] FAIL the other pilot appears as a ship
+[dev1]    shared sky UNDER INSIDE; other pilot -1 units away
+[dev1] FAIL tagged them
+[dev1] ok   the anchor's contacts carry shared ids
+[dev1]    anchor has 18 shared ships (was 2 local)
+[dev1]    anchor removed 17 shared ships
+[dev1] ok   the other pilot leaves the sky
+[dev1] ok   the shared sky never enters the atlas
+[dev1] ok   or the session save
+[dev1] FAILURES

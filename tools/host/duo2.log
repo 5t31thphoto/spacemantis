@@ -1,0 +1,19 @@
+[dev2] ok   signals on: the dock grows a SIGNAL button
+[dev2] ok   portal commissioned, seeking
+[dev2] FAIL paired with the other pilot: the gate turns green
+[dev2]    role GUEST, peer MANTIS-3456, seed d0251fa8
+[dev2] FAIL launched toward the magenta gate
+[dev2] FAIL the experimental wake one layer down
+[dev2] FAIL arrived in the shared sky (haywire)
+[dev2] FAIL the other pilot appears as a ship
+[dev2]    shared sky SOUTH REACH; other pilot -1 units away
+[dev2] FAIL chat arrives on the other screen
+[dev2] FAIL got tagged: you're it
+[dev2] FAIL the guest sees the anchor's contacts
+[dev2] ok   and loses them when the anchor does
+[dev2] FAIL a gate home
+[dev2] FAIL leaving the sky ends the session
+[dev2] ok   and the gate takes you home
+[dev2] FAIL the shared sky never enters the atlas
+[dev2] FAIL or the session save
+[dev2] FAILURES
