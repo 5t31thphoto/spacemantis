@@ -230,14 +230,18 @@ void coolHeat(uint8_t amount) {
   }
 }
 
-// The used hold is the sum of the lines: recomputed, never trusted on its own.
+// Scans are data, not cargo: they ride with the pilot and take no hold space.
+bool isDataItem(const char *what) { return what && (strcmp(what, "fixed point scan") == 0 || strcmp(what, "anomaly scan") == 0); }
+
+// The used hold is the sum of the cargo lines: recomputed, never trusted on its own.
 void haulRecount() {
   uint32_t used = 0;
   uint8_t w = 0;
   for (uint8_t i = 0; i < s_p.haulN && i < MAX_HAUL_LINES; i++) {
     if (s_p.haul[i].amount == 0 || !s_p.haul[i].what[0]) continue;   // drop empty lines
     if (w != i) s_p.haul[w] = s_p.haul[i];
-    used += s_p.haul[w].amount; w++;
+    if (!isDataItem(s_p.haul[w].what)) used += s_p.haul[w].amount;
+    w++;
   }
   for (uint8_t i = w; i < MAX_HAUL_LINES; i++) memset(&s_p.haul[i], 0, sizeof(HaulLine));
   s_p.haulN = w;
@@ -246,7 +250,7 @@ void haulRecount() {
 
 bool haulAdd(const char *what, uint16_t amount, bool legal) {
   if (!what || amount == 0) return false;
-  if ((uint32_t)s_p.holdUsed + amount > s_p.holdCap) return false;
+  if (!isDataItem(what) && (uint32_t)s_p.holdUsed + amount > s_p.holdCap) return false;
   // merge same name
   for (uint8_t i = 0; i < s_p.haulN; i++) {
     if (strncmp(s_p.haul[i].what, what, NAME_LEN) == 0) {

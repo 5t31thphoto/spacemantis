@@ -2229,8 +2229,8 @@ static void shipAction(uint8_t t) {
     return;
   }
   if (r.owned) {
-    int data = sm::haulCount("fixed point scan") + sm::haulCount("anomaly scan");   // data rides with the pilot
-    if (p.holdUsed > data) { setBanner("EMPTY THE HOLD: COMMODITIES DON'T SURVIVE THE PHASE", 2000); hx::pop(0.12f, 0.01f); return; }
+    // scans are data and ride with the pilot (they no longer count as hold)
+    if (p.holdUsed > 0) { setBanner("EMPTY THE HOLD: COMMODITIES DON'T SURVIVE THE PHASE", 2000); hx::pop(0.12f, 0.01f); return; }
     if (sm::shipSwap(t)) {
       snprintf(buf, sizeof(buf), "TELEPORTED - NOW FLYING THE %s", sm::shipSpec(t).name);
       setBanner(buf, 2000); hx::swell(0.7f, 0.25f, 0.6f); crossFlash = 0.6f;
