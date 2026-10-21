@@ -2834,7 +2834,10 @@ static void updateInput() {
   }
   if (bootOpen) {
     if (newGameDone > 0) { newGameDone -= dt; return; }
-    if (M5.BtnA.isPressed() && M5.BtnC.isPressed()) {   // A + C: switch the experimental Signals on or off
+    // single-finger holds: A/B/C are one touch panel, and two-finger chords ghost a middle (B) touch
+    bool onlyA = M5.BtnA.isPressed() && !M5.BtnB.isPressed() && !M5.BtnC.isPressed();
+    bool onlyC = M5.BtnC.isPressed() && !M5.BtnA.isPressed() && !M5.BtnB.isPressed();
+    if (onlyA) {   // hold A alone: switch the experimental Signals on or off
       signalsHold += dt;
       if (signalsHold >= 2.0f) {
         bool on = !signalsOn();
@@ -2845,12 +2848,12 @@ static void updateInput() {
     }
     signalsHold = 0;
     if (signalsDone > 0) { signalsDone -= dt; }
-    if (M5.BtnB.isPressed() && M5.BtnC.isPressed()) {
-      // B + C held: the bar fills; it turns red before the save is cleared
+    if (onlyC) {
+      // hold C alone (3 s): the bar fills; it turns red before the save is cleared
       float before = newGameHold;
       newGameHold += dt;
-      if (before < 1.5f && newGameHold >= 1.5f) hx::pop(0.35f, 0.03f);
-      if (newGameHold >= 2.0f) { startNewGame(); newGameHold = 0; newGameDone = 1.6f; hx::boom(0.7f); }
+      if (before < 2.25f && newGameHold >= 2.25f) hx::pop(0.35f, 0.03f);
+      if (newGameHold >= 3.0f) { startNewGame(); newGameHold = 0; newGameDone = 1.6f; hx::boom(0.7f); }
       return;
     }
     newGameHold = 0;
@@ -4167,10 +4170,10 @@ static void drawBoot() {
   cv.print("tap to continue");
   cv.setTextColor(rgb(90, 104, 116));
   cv.setCursor(118, 150);
-  cv.print("hold B + C: new game");
+  cv.print("hold C (3s): new game");
   cv.setCursor(118, 160);
   cv.setTextColor(signalsOn() ? rgb(230, 90, 230) : rgb(90, 104, 116));
-  cv.print(signalsOn() ? "hold A + C: signals ON" : "hold A + C: signals (exp.)");
+  cv.print(signalsOn() ? "hold A: signals ON" : "hold A: signals (exp.)");
   if (signalsHold > 0.f || signalsDone > 0.f) {
     float u = signalsDone > 0.f ? 1.f : clampf(signalsHold / 2.0f, 0.f, 1.f);
     cv.drawRect(118, 172, 180, 8, rgb(60, 70, 80));
@@ -4179,7 +4182,7 @@ static void drawBoot() {
     cv.print(signalsDone > 0.f ? (signalsOn() ? "signals on: see the dock" : "signals off") : "keep holding");
   }
   if (newGameHold > 0.f || newGameDone > 0.f) {
-    float u = newGameDone > 0.f ? 1.f : clampf(newGameHold / 2.0f, 0.f, 1.f);
+    float u = newGameDone > 0.f ? 1.f : clampf(newGameHold / 3.0f, 0.f, 1.f);
     bool red = u >= 0.75f;
     cv.drawRect(118, 172, 180, 8, rgb(60, 70, 80));
     cv.fillRect(119, 173, (int)(178 * u), 6, red ? rgb(230, 50, 40) : rgb(0, 115, 115));

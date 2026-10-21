@@ -204,7 +204,7 @@ Arriving somewhere for the first time deals it its own gates: mostly to places n
 
 With an SD card in the Core2, the game keeps `/spacemantis-saves/pilot.sav` (the whole game, including where you are and how far into a dive), a readable `journal.txt`, and a `README.txt`. It saves on meaningful events and every half minute, and on power-up picks up where you left it. Internal flash keeps a mirror, so no card means nothing is lost.
 
-- **New game:** hold **B + C** on the title screen for two seconds. The bar turns red just before the save is cleared. Or delete `pilot.sav` (only that file) from the card.
+- **New game:** hold **C** (alone) on the title screen for three seconds. The bar turns red just before the save is cleared. Or delete `pilot.sav` (only that file) from the card.
 
 ## Below the roads
 
